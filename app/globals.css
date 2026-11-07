@@ -1,0 +1,224 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
+    radial-gradient(900px 500px at 90% 10%, rgba(20, 184, 166, 0.12), transparent 55%),
+    #060a13;
+  color: #e6edf7;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.office-floor {
+  background-color: #dfc9a7;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(120, 80, 42, 0.16) 0px,
+      rgba(120, 80, 42, 0.16) 1px,
+      transparent 1px,
+      transparent 96px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.13) 0px,
+      rgba(255, 255, 255, 0.13) 1px,
+      transparent 1px,
+      transparent 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.05) 0px,
+      rgba(255, 255, 255, 0.05) 2px,
+      transparent 2px,
+      transparent 34px
+    ),
+    linear-gradient(180deg, #e8d5b7 0%, #ddc39f 100%);
+}
+
+.room-base {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 18px 40px -24px rgba(15, 23, 42, 0.65);
+}
+
+.meeting-carpet {
+  background-color: #16233f;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(94, 234, 212, 0.06) 0 2px, transparent 2px),
+    radial-gradient(circle at 70% 60%, rgba(125, 211, 252, 0.05) 0 2px, transparent 2px),
+    linear-gradient(135deg, rgba(56, 89, 158, 0.24) 25%, transparent 25%),
+    linear-gradient(225deg, rgba(56, 89, 158, 0.18) 25%, transparent 25%);
+  background-size:
+    42px 42px,
+    64px 64px,
+    90px 90px,
+    90px 90px;
+}
+
+.work-carpet {
+  background-color: #cfd9e4;
+  background-image:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.4) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.4) 1px, transparent 1px),
+    linear-gradient(180deg, #d9e2eb 0%, #c6d2df 100%);
+  background-size:
+    34px 34px,
+    34px 34px,
+    100% 100%;
+}
+
+.prayer-carpet {
+  background-color: #17603f;
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.05) 0px,
+      rgba(255, 255, 255, 0.05) 2px,
+      transparent 2px,
+      transparent 16px
+    ),
+    radial-gradient(circle at 50% 20%, rgba(250, 204, 21, 0.08), transparent 55%),
+    linear-gradient(160deg, #1c744c 0%, #12543a 100%);
+}
+
+.wood-desk {
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(82, 48, 18, 0.16) 0 1px,
+      transparent 1px 24px
+    ),
+    linear-gradient(180deg, #c68d4f 0%, #a96f36 100%);
+}
+
+.wood-table {
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(90, 52, 20, 0.18) 0 1px,
+      transparent 1px 40px
+    ),
+    linear-gradient(180deg, #b9803f 0%, #8f5a25 100%);
+}
+
+.glass-wall {
+  background: linear-gradient(150deg, rgba(186, 230, 253, 0.16), rgba(125, 211, 252, 0.05));
+  box-shadow:
+    inset 0 0 0 1px rgba(186, 230, 253, 0.45),
+    inset 0 0 40px rgba(125, 211, 252, 0.08);
+  backdrop-filter: blur(2px);
+}
+
+.tv-screen {
+  background:
+    radial-gradient(120% 90% at 20% 10%, rgba(56, 189, 248, 0.35), transparent 60%),
+    linear-gradient(160deg, #0b1224 0%, #142544 55%, #06202c 100%);
+}
+
+.text-glow {
+  text-shadow: 0 0 18px rgba(94, 234, 212, 0.55);
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(17, 26, 47, 0.92) 0%, rgba(10, 16, 31, 0.94) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 30px 70px -30px rgba(0, 0, 0, 0.9);
+}
+
+.hairline {
+  border-color: rgba(148, 163, 184, 0.14);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 999px;
+  background: #5eead4;
+  border: 2px solid #0b1220;
+  box-shadow: 0 0 12px rgba(94, 234, 212, 0.7);
+  cursor: pointer;
+}
+
+textarea,
+input,
+select {
+  outline: none;
+}
+
+.field {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.55);
+  padding: 0.45rem 0.6rem;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #e2e8f0;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.field::placeholder {
+  color: #64748b;
+}
+
+.field:focus {
+  border-color: rgba(94, 234, 212, 0.45);
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.08);
+}
+
+select.field option {
+  background: #0b1220;
+  color: #e2e8f0;
+}
