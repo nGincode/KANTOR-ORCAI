@@ -15,7 +15,6 @@ import {
   Loader2,
   Plug,
   Plus,
-  RefreshCw,
   Save,
   Sparkles,
   Trash2,
@@ -24,14 +23,19 @@ import {
   X,
 } from "lucide-react";
 import { useOffice } from "@/lib/store";
+import { ModelPicker } from "./ModelPicker";
+import { useRoleOptions } from "@/lib/roles";
+import { generateAgentMd, suggestedSkills } from "@/lib/agent-md";
 import {
   DESKS,
   HAIR_STYLES,
-  ROLE_PRESETS,
   SHIRT_COLORS,
   SKIN_TONES,
 } from "@/lib/office";
 import type { AgentConfig, AgentRuntime, HairStyle } from "@/lib/types";
+
+/** API default KANTOR ORCAI — sama dengan yang dipakai wizard */
+const DEFAULT_API_BASE_URL = process.env.NEXT_PUBLIC_DEFAULT_API_URL || "https://api.openai.com/v1";
 
 const SKILL_POOL = [
   "Node.js",
@@ -52,7 +56,15 @@ const SKILL_POOL = [
   "Prompt Engineering",
 ];
 
-function blankAgent(id: string, deskIndex: number): AgentConfig {
+/**
+ * A new employee starts with the persona fields blank (the owner fills them) but
+ * with the account's AI connection pre-filled, so the model works immediately.
+ */
+function blankAgent(
+  id: string,
+  deskIndex: number,
+  ai: { apiKey?: string; model?: string; apiBaseUrl?: string } = {},
+): AgentConfig {
   return {
     id,
     name: "",
@@ -60,89 +72,14 @@ function blankAgent(id: string, deskIndex: number): AgentConfig {
     shirtColor: SHIRT_COLORS[0],
     hairStyle: "short",
     skinTone: SKIN_TONES[0],
-    skills: ["Node.js", "PostgreSQL"],
+    skills: [],
     agentMd: "",
-    apiBaseUrl: "https://api.openai.com/v1",
-    apiKey: "",
-    model: "gpt-4o-mini",
-    demoMode: true,
+    apiBaseUrl: ai.apiBaseUrl || DEFAULT_API_BASE_URL,
+    apiKey: ai.apiKey ?? "",
+    model: ai.model || "gpt-4o-mini",
+    demoMode: false,
     deskIndex,
   };
-}
-
-function traitsFor(role: string) {
-  const r = role.toLowerCase();
-  if (/(lead|architect|manager|principal)/.test(r))
-    return {
-      persona: "tenang, strategic, dan mengubah diskusi liar menjadi rencana eksekusi",
-      voice: "Membuka diskusi dengan tujuan, menengahi perbedaan, lalu menyimpulkan keputusan.",
-      sop: "Pecah pekerjaan menjadi milestone kecil dengan deliverable jelas.",
-      boundary: "Tidak menulis implementasi detail; delegasikan sesuai spesialisasi.",
-    };
-  if (/(qa|test|quality)/.test(r))
-    return {
-      persona: "skeptis sehat, teliti, dan senang menemukan edge case",
-      voice: "Mengajukan skenario gagal, kriteria penerimaan, dan bukti pengujian.",
-      sop: "Susun test matrix sebelum rilis dan prioritaskan regression alur kritis.",
-      boundary: "Tidak menandai rilis lolos tanpa bukti pengujian terdokumentasi.",
-    };
-  if (/(database|data|dba)/.test(r))
-    return {
-      persona: "analitis, hati-hati, dan peduli integritas data",
-      voice: "Membahas normalisasi, index, migrasi, dan strategi rollback dengan angka.",
-      sop: "Setiap perubahan skema lewat migrasi reversible dan review query plan.",
-      boundary: "Tidak menjalankan migrasi destruktif tanpa persetujuan.",
-    };
-  if (/(frontend|ui|react|web)/.test(r))
-    return {
-      persona: "kreatif, detail pada animasi, dan vokal soal pengalaman pengguna",
-      voice: "Memakai analogi UI, membahas state management dan aksesibilitas.",
-      sop: "Validasi di dua breakpoint, ukur Core Web Vitals, jaga design system.",
-      boundary: "Tidak menambah library baru tanpa persetujuan Tech Lead.",
-    };
-  if (/(devops|infra|sre|platform)/.test(r))
-    return {
-      persona: "sistematis, waspada pada risiko operasional, dan hemat biaya",
-      voice: "Membahas pipeline, observability, canary, dan rollback otomatis.",
-      sop: "Infrastruktur reproducible, health check, dan alert yang actionable.",
-      boundary: "Tidak menyentuh akses produksi tanpa persetujuan.",
-    };
-  return {
-    persona: "praktis, kolaboratif, dan fokus pada solusi yang bisa dieksekusi",
-    voice: "Memberi pendapat teknis spesifik dengan contoh konkret.",
-    sop: "Definisikan kriteria selesai sebelum implementasi dan dokumentasikan hasil.",
-    boundary: "Tidak mengambil keputusan produk sendirian.",
-  };
-}
-
-function generateMd(agent: AgentConfig) {
-  const t = traitsFor(agent.role);
-  const name = agent.name.trim() || "Pegawai AI";
-  const skills = agent.skills.length ? agent.skills : ["Problem Solving"];
-  return `# agent.md — ${name}
-
-## Peran
-${agent.role} di AI Office Orchestra. ${t.persona.charAt(0).toUpperCase() + t.persona.slice(1)}.
-
-## Kepribadian
-- ${t.persona.charAt(0).toUpperCase() + t.persona.slice(1)}.
-- Kolaboratif, terbuka pada kritik, dan fokus pada solusi.
-
-## Gaya Bicara Saat Rapat
-- ${t.voice}
-- Selalu rujuk keahlian: ${skills.join(", ")}.
-- Jawab 2–4 kalimat, ringkas dan konkret.
-
-## SOP Kerja
-- ${t.sop}
-- Catat keputusan dan tindak lanjut di transkrip rapat.
-
-## Batasan Peran
-- ${t.boundary}
-- Tidak mengubah keputusan arsitektur tanpa koordinasi Tech Lead.
-
-## AI Skills
-${skills.map((s) => `- ${s}`).join("\n")}`;
 }
 
 function AvatarPreview({ agent }: { agent: AgentConfig }) {
@@ -212,6 +149,17 @@ function MarkdownPreview({ md }: { md: string }) {
 export function AgentManagerModal() {
   const modalOpen = useOffice((s) => s.modalOpen);
   const editingAgentId = useOffice((s) => s.editingAgentId);
+  // the signed-in account's AI connection — new employees inherit it
+  const account = useOffice((s) => s.account);
+  const aiDefaults = useOffice((s) => s.aiDefaults);
+  // what the owner saved at login: key + model + base URL, all inherited
+  const accountAi = {
+    apiKey: aiDefaults?.apiKey || account?.modelKey,
+    model: aiDefaults?.model || account?.modelName,
+    apiBaseUrl: aiDefaults?.apiBaseUrl || DEFAULT_API_BASE_URL,
+  };
+  // template + roles saved under this account
+  const { roles, custom, add: addRole, remove: removeRole } = useRoleOptions(Boolean(account));
   const closeModal = useOffice((s) => s.closeModal);
   const agents = useOffice((s) => s.agents);
   const saveAgent = useOffice((s) => s.saveAgent);
@@ -223,10 +171,12 @@ export function AgentManagerModal() {
   const [form, setForm] = useState<AgentConfig | null>(null);
   const [skillInput, setSkillInput] = useState("");
   const [mdTab, setMdTab] = useState<"edit" | "preview">("edit");
+  const [mdBusy, setMdBusy] = useState(false);
+  /** non-null → dialog konfirmasi hapus (pegawai / jabatan) tampil di dalam modal */
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmRole, setConfirmRole] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
-  const [models, setModels] = useState<string[]>([]);
-  const [modelNote, setModelNote] = useState<{ text: string; error: boolean } | null>(null);
-  const [fetchingModels, setFetchingModels] = useState(false);
+  const [keyHint, setKeyHint] = useState<string | null>(null);
   const [testState, setTestState] = useState<{ loading: boolean; message: string; error: boolean } | null>(null);
 
   const isNew = !agents.some((a) => a.id === activeId);
@@ -244,13 +194,12 @@ export function AgentManagerModal() {
       setActiveId(existing.id);
     } else {
       const id = `agent-${Date.now().toString(36)}`;
-      setForm(blankAgent(id, freeDesk));
+      setForm(blankAgent(id, freeDesk, accountAi));
       setActiveId(id);
     }
     setSkillInput("");
     setMdTab("edit");
-    setModels([]);
-    setModelNote(null);
+    setKeyHint(null);
     setTestState(null);
     setShowKey(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -263,8 +212,7 @@ export function AgentManagerModal() {
     setForm({ ...agent, skills: [...agent.skills] });
     setActiveId(agent.id);
     setSkillInput("");
-    setModels([]);
-    setModelNote(null);
+    setKeyHint(null);
     setTestState(null);
     setMdTab("edit");
   };
@@ -275,13 +223,29 @@ export function AgentManagerModal() {
       return;
     }
     const id = `agent-${Date.now().toString(36)}`;
-    setForm(blankAgent(id, freeDesk));
+    setForm(blankAgent(id, freeDesk, accountAi));
     setActiveId(id);
     setSkillInput("");
-    setModels([]);
-    setModelNote(null);
+    setKeyHint(null);
     setTestState(null);
     setMdTab("edit");
+  };
+
+  /**
+   * Ganti jabatan → isi otomatis skill (jika masih kosong) dan agent.md
+   * (jika masih kosong / hasil generate sebelumnya). Tulisan manual tidak ditimpa.
+   */
+  const pickRole = (role: string) => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      const prevGenerated = prev.agentMd.trim() === "" || prev.agentMd === generateAgentMd(prev);
+      const skills = prev.skills.length ? prev.skills : suggestedSkills(role);
+      const next = { ...prev, role, skills };
+      return {
+        ...next,
+        agentMd: prevGenerated ? generateAgentMd(next) : prev.agentMd,
+      };
+    });
   };
 
   const addSkill = (raw: string) => {
@@ -297,40 +261,6 @@ export function AgentManagerModal() {
     });
     setField("skills", next.slice(0, 14));
     setSkillInput("");
-  };
-
-  const fetchModels = async () => {
-    if (!form) return;
-    setFetchingModels(true);
-    setModelNote(null);
-    try {
-      const res = await fetch("/api/agent/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseUrl: form.apiBaseUrl,
-          apiKey: form.apiKey,
-          demoMode: form.demoMode,
-        }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setModels(data.models ?? []);
-        setModelNote({
-          text: data.simulated
-            ? "Mode demo: daftar model contoh. Masukkan API key untuk model asli."
-            : `${data.models.length} model ditemukan dari endpoint.`,
-          error: false,
-        });
-        if (!form.model && data.models?.[0]) setField("model", data.models[0]);
-      } else {
-        setModelNote({ text: data.error ?? "Gagal mengambil model.", error: true });
-      }
-    } catch {
-      setModelNote({ text: "Tidak dapat menghubungi server proxy.", error: true });
-    } finally {
-      setFetchingModels(false);
-    }
   };
 
   const testConnection = async () => {
@@ -399,7 +329,7 @@ export function AgentManagerModal() {
       apiBaseUrl: form.apiBaseUrl.trim(),
       apiKey: form.apiKey.trim(),
       model: form.model.trim(),
-      agentMd: form.agentMd.trim() || generateMd(form),
+      agentMd: form.agentMd.trim() || generateAgentMd(form),
       skills: form.skills.length ? form.skills : ["Problem Solving"],
     };
     saveAgent(config);
@@ -408,10 +338,7 @@ export function AgentManagerModal() {
 
   const remove = () => {
     if (!form || isNew) return;
-    if (window.confirm(`Hapus ${form.name} dari kantor? Konfigurasi dan agent.md-nya akan hilang.`)) {
-      deleteAgent(form.id);
-      closeModal();
-    }
+    setConfirmDelete(form.name);
   };
 
   return (
@@ -430,7 +357,7 @@ export function AgentManagerModal() {
             exit={{ opacity: 0, y: 10, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 280, damping: 26 }}
             onClick={(event) => event.stopPropagation()}
-            className="flex h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/15 bg-[#0a1020] shadow-[0_50px_120px_-40px_rgba(0,0,0,1)]"
+            className="relative flex h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/15 bg-[#0a1020] shadow-[0_50px_120px_-40px_rgba(0,0,0,1)]"
           >
             {/* team list */}
             <div className="hidden w-[218px] shrink-0 flex-col border-r border-white/10 bg-slate-950/40 md:flex">
@@ -519,16 +446,62 @@ export function AgentManagerModal() {
                     <Field label="Jabatan / Role">
                       <input
                         value={form.role}
-                        onChange={(event) => setField("role", event.target.value)}
+                        onChange={(event) => pickRole(event.target.value)}
                         list="role-presets"
                         placeholder="Backend Developer"
                         className="field"
                       />
                       <datalist id="role-presets">
-                        {ROLE_PRESETS.map((role) => (
+                        {roles.map((role) => (
                           <option key={role} value={role} />
                         ))}
                       </datalist>
+                      {/* datalist native tidak menampilkan pilihan sampai diketik,
+                          jadi semua jabatan juga tampil sebagai chip di sini */}
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {roles.map((role) => {
+                          const active = form.role.trim() === role;
+                          const own = custom.includes(role);
+                          return (
+                            <span
+                              key={role}
+                              className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[8.5px] font-bold transition ${
+                                active
+                                  ? "border-cyan-300/60 bg-cyan-400/15 text-cyan-100"
+                                  : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/25"
+                              }`}
+                            >
+                              <button type="button" onClick={() => pickRole(role)} className="truncate">
+                                {role}
+                              </button>
+                              {own && (
+                                <button
+                                  type="button"
+                                  aria-label={`Hapus jabatan ${role}`}
+                                  onClick={() => setConfirmRole(role)}
+                                  className="text-slate-500 transition hover:text-rose-300"
+                                >
+                                  <X size={8} />
+                                </button>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const name = form.role.trim();
+                          if (!name) return;
+                          void addRole(name).then((r) => {
+                            if (!r.ok) notify("Gagal menyimpan jabatan ke database.", "error");
+                            else notify(`Jabatan "${name}" ditambahkan ke pilihan.`, "success");
+                          });
+                        }}
+                        className="mt-1 flex items-center gap-1 rounded px-1 py-0.5 text-[8.5px] font-bold text-cyan-300/80 transition hover:text-cyan-200"
+                      >
+                        <Plus size={9} /> Simpan jabatan ini sebagai pilihan
+                      </button>
                     </Field>
                     <AvatarPreview agent={form} />
                   </div>
@@ -660,9 +633,9 @@ export function AgentManagerModal() {
                         <div className="relative">
                           <Link2 size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
                           <input
-                            value={form.apiBaseUrl}
+                            value={form.apiBaseUrl || DEFAULT_API_BASE_URL}
                             onChange={(event) => setField("apiBaseUrl", event.target.value)}
-                            placeholder="https://api.openai.com/v1"
+                            placeholder={DEFAULT_API_BASE_URL}
                             className="field pl-7 font-mono text-[10.5px]"
                           />
                         </div>
@@ -711,47 +684,16 @@ export function AgentManagerModal() {
                         </button>
                       </label>
 
-                      <Field label="Model">
-                        <div className="flex gap-1.5">
-                          <input
-                            value={form.model}
-                            onChange={(event) => setField("model", event.target.value)}
-                            placeholder="gpt-4o-mini"
-                            className="field flex-1 font-mono text-[10.5px]"
-                          />
-                          <button
-                            type="button"
-                            onClick={fetchModels}
-                            disabled={fetchingModels}
-                            className="flex items-center gap-1 rounded-lg border border-cyan-300/25 bg-cyan-400/10 px-2 text-[9px] font-semibold text-cyan-200 transition hover:bg-cyan-400/20 disabled:opacity-50"
-                          >
-                            {fetchingModels ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-                            Fetch Models
-                          </button>
-                        </div>
-                        {models.length > 0 && (
-                          <div className="relative mt-1.5">
-                            <select
-                              value={models.includes(form.model) ? form.model : ""}
-                              onChange={(event) => event.target.value && setField("model", event.target.value)}
-                              className="field appearance-none pr-8 text-[10.5px]"
-                            >
-                              <option value="">— Pilih dari {models.length} model —</option>
-                              {models.map((model) => (
-                                <option key={model} value={model}>
-                                  {model}
-                                </option>
-                              ))}
-                            </select>
-                            <ChevronDown size={12} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                          </div>
-                        )}
-                        {modelNote && (
-                          <p className={`mt-1 text-[8.5px] ${modelNote.error ? "text-rose-300" : "text-slate-500"}`}>
-                            {modelNote.text}
-                          </p>
-                        )}
-                      </Field>
+                      <ModelPicker
+                        baseUrl={form.apiBaseUrl || DEFAULT_API_BASE_URL}
+                        apiKey={form.apiKey || accountAi.apiKey || ""}
+                        value={form.model}
+                        onChange={(m) => setField("model", m)}
+                        onKeyHint={setKeyHint}
+                      />
+                      {keyHint && (
+                        <p className="rounded-md bg-amber-400/10 px-2 py-1 text-[8.5px] leading-snug text-amber-100">{keyHint}</p>
+                      )}
 
                       <button
                         type="button"
@@ -789,15 +731,52 @@ export function AgentManagerModal() {
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
                           if (!form) return;
-                          setField("agentMd", generateMd(form));
                           setMdTab("edit");
-                          notify("agent.md berhasil di-generate dari jabatan & skills.", "success");
+                          setMdBusy(true);
+                          try {
+                            const res = await fetch("/api/agent/agent-md", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                name: form.name,
+                                role: form.role,
+                                skills: form.skills,
+                                apiBaseUrl: form.apiBaseUrl,
+                                apiKey: form.apiKey,
+                                model: form.model,
+                              }),
+                            });
+                            const data = (await res.json()) as {
+                              content?: string;
+                              source?: "ai" | "template";
+                              warning?: string;
+                              error?: string;
+                            };
+                            if (!data.content) {
+                              notify(data.error ?? "Generate agent.md gagal.", "error");
+                              return;
+                            }
+                            setField("agentMd", data.content);
+                            notify(
+                              data.source === "ai"
+                                ? `agent.md dibuat oleh ${form.model || "model terpilih"}.`
+                                : data.warning
+                                  ? `AI gagal (${data.warning}) — pakai template jabatan.`
+                                  : "AI belum tersambung — agent.md dibuat dari template jabatan.",
+                              data.source === "ai" ? "success" : "info",
+                            );
+                          } catch {
+                            notify("Tidak bisa menghubungi server.", "error");
+                          } finally {
+                            setMdBusy(false);
+                          }
                         }}
-                        className="flex items-center gap-1 rounded-lg border border-violet-300/25 bg-violet-400/10 px-2 py-1 text-[9px] font-semibold text-violet-200 transition hover:bg-violet-400/20"
+                        disabled={mdBusy}
+                        className="flex items-center gap-1 rounded-lg border border-violet-300/25 bg-violet-400/10 px-2 py-1 text-[9px] font-semibold text-violet-200 transition hover:bg-violet-400/20 disabled:opacity-50"
                       >
-                        <Sparkles size={10} /> Auto-Generate agent.md
+                        <Sparkles size={10} /> {mdBusy ? "Menulis…" : "Auto-Generate agent.md"}
                       </button>
                       <div className="flex rounded-lg border border-white/10 p-0.5">
                         {(["edit", "preview"] as const).map((mode) => (
@@ -874,6 +853,81 @@ export function AgentManagerModal() {
                 </div>
               </div>
             </div>
+
+            {/* konfirmasi hapus (pengganti window.confirm bawaan browser) */}
+            <AnimatePresence>
+              {(confirmDelete || confirmRole) && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => {
+                    setConfirmDelete(null);
+                    setConfirmRole(null);
+                  }}
+                  className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+                >
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                    onClick={(event) => event.stopPropagation()}
+                    className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0b1220] p-4 shadow-2xl"
+                  >
+                    <p className="flex items-center gap-1.5 text-[11px] font-black text-white">
+                      <Trash2 size={12} className="text-rose-300" />
+                      {confirmRole ? "Hapus jabatan?" : "Hapus pegawai?"}
+                    </p>
+                    <p className="mt-1.5 text-[10px] leading-relaxed text-slate-400">
+                      {confirmRole
+                        ? <>
+                            Jabatan <span className="font-semibold text-slate-200">{confirmRole}</span> akan
+                            hilang dari pilihan. Pegawai yang sudah memakainya tidak berubah.
+                          </>
+                        : <>
+                            <span className="font-semibold text-slate-200">{confirmDelete}</span> keluar dari
+                            kantor. Konfigurasi dan agent.md-nya ikut terhapus.
+                          </>}
+                    </p>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmDelete(null);
+                          setConfirmRole(null);
+                        }}
+                        className="rounded-lg border border-white/10 px-3 py-1.5 text-[10px] font-semibold text-slate-300 transition hover:bg-white/[0.06]"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirmRole) {
+                            const role = confirmRole;
+                            setConfirmRole(null);
+                            void removeRole(role).then((r) =>
+                              notify(
+                                r.ok ? `Jabatan "${role}" dihapus.` : "Gagal menghapus jabatan dari database.",
+                                r.ok ? "success" : "error",
+                              ),
+                            );
+                            return;
+                          }
+                          if (!form) return;
+                          setConfirmDelete(null);
+                          deleteAgent(form.id);
+                          closeModal();
+                        }}
+                        className="rounded-lg bg-rose-500 px-3 py-1.5 text-[10px] font-bold text-white transition hover:bg-rose-400"
+                      >
+                        Hapus
+                      </button>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         </motion.div>
       )}

@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { Header } from "@/components/Header";
 import { Sidebar } from "@/components/Sidebar";
 import { AgentManagerModal } from "@/components/AgentManagerModal";
 import { Toast } from "@/components/Toast";
+import { StoragePicker } from "@/components/StoragePicker";
+import { ModelKeyModal } from "@/components/ModelKeyModal";
+import { ConversationHistoryPanel } from "@/components/ConversationHistoryPanel";
+import { OnboardingGate } from "@/components/OnboardingGate";
+import { AccountLayer } from "@/components/AccountLayer";
 import { useOffice } from "@/lib/store";
 
 const Office3D = dynamic(
@@ -26,6 +31,12 @@ const Office3D = dynamic(
 export default function Page() {
   const initAutoLife = useOffice((s) => s.initAutoLife);
   const agents = useOffice((s) => s.agents);
+  const storagePickerOpen = useOffice((s) => s.storagePickerOpen);
+  const setStoragePickerOpen = useOffice((s) => s.setStoragePickerOpen);
+  const modelKeyOpen = useOffice((s) => s.modelKeyOpen);
+  const setModelKeyOpen = useOffice((s) => s.setModelKeyOpen);
+  const account = useOffice((s) => s.account);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     initAutoLife();
@@ -50,10 +61,28 @@ export default function Page() {
         </p>
         <p className="flex items-center gap-1.5">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-          Mode demo aktif — API key hanya disimpan di memori browser.
+          {account
+            ? account.modelKey
+              ? `Masuk sebagai ${account.email} · semua pegawai berjalan dengan model asli.`
+              : `Masuk sebagai ${account.email} · pasang API key untuk mengaktifkan AI penuh.`
+            : "Belum login — pegawai masih memakai jawaban demo. Masuk dengan Google untuk AI penuh."}
+          {account && (
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(true)}
+              className="rounded border border-white/10 px-1.5 py-0.5 font-bold text-slate-300 transition hover:border-cyan-300/40 hover:text-cyan-200"
+            >
+              Riwayat obrolan
+            </button>
+          )}
         </p>
       </footer>
 
+      <AccountLayer />
+      <OnboardingGate />
+      {storagePickerOpen && <StoragePicker onClose={() => setStoragePickerOpen(false)} />}
+      {modelKeyOpen && <ModelKeyModal onClose={() => setModelKeyOpen(false)} />}
+      {historyOpen && <ConversationHistoryPanel onClose={() => setHistoryOpen(false)} />}
       <AgentManagerModal />
       <Toast />
     </div>

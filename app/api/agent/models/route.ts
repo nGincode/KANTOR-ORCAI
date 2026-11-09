@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseCompletion } from "@/lib/chat-json";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,12 +28,8 @@ export async function POST(request: Request) {
   const apiKey = (body.apiKey ?? "").trim();
 
   if (body.demoMode || !apiKey || !baseUrl) {
-    return NextResponse.json({
-      ok: true,
-      simulated: true,
-      models: DEMO_MODELS,
-      note: "Mode demo: daftar model contoh. Masukkan API key untuk mengambil model asli.",
-    });
+    // a signed-in owner never picks from a fake list
+    return NextResponse.json({ ok: true, simulated: true, models: DEMO_MODELS });
   }
 
   try {
@@ -56,7 +53,8 @@ export async function POST(request: Request) {
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      // some gateways answer /models in SSE too
+      parsed = parseCompletion(text);
     } catch {
       return NextResponse.json({ ok: false, error: "Respons models bukan JSON yang valid." });
     }

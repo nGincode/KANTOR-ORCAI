@@ -10,20 +10,27 @@ import {
   CORRIDOR,
   CORRIDOR_SOFA,
   DESKS,
+  DESK_APPROACH,
   DESK_SIZE,
   LOUNGE_SOFA,
   LOUNGE_TV,
   MEETING_SEATS,
   MEETING_TABLE,
   PANTRY_COUNTER,
+  PANTRY_SEATS,
   PRAYER_MATS,
   PROJECTOR,
+  ROOMS,
   ROOM_LIST,
+  planPath,
+  roomAt,
   type RoomDef,
 } from "@/lib/office";
 import { Character3D } from "./Character3D";
 import { agentPositions } from "@/lib/agentPositions";
+import { liftState } from "@/lib/liftState";
 import { HtmlPortalProvider, PortalHtml } from "./HtmlPortal";
+import { Floor2Plan } from "./Floor2Walls";
 
 /* --------------------------------- helpers -------------------------------- */
 
@@ -108,18 +115,16 @@ function Door({ room }: { room: RoomDef }) {
   const top = room.doorSide === "south";
   const swing = room.doorAxis === "z" ? 1.22 : top ? 1.22 : -1.22;
   const frosted = room.key === "toilet";
+  const openRef = useRef(0);
 
   useFrame((_, delta) => {
     if (!panelRef.current) return;
     const near = [...agentPositions.values()].some(
-      (agent) => Math.hypot(agent.x - room.door.x, agent.y - room.door.y) < 0.45,
+      (agent) => Math.hypot(agent.x - room.door.x, agent.y - room.door.y) < 0.52,
     );
-    panelRef.current.rotation.y = THREE.MathUtils.damp(
-      panelRef.current.rotation.y,
-      near ? swing : 0,
-      10,
-      delta,
-    );
+    const target = near ? 1 : 0;
+    openRef.current = THREE.MathUtils.damp(openRef.current, target, 9, delta);
+    panelRef.current.rotation.y = openRef.current * swing;
   });
 
   return (
@@ -157,14 +162,19 @@ function Door({ room }: { room: RoomDef }) {
       <group ref={panelRef} position={[-0.58, 0, 0]}>
         <mesh position={[0.53, 0.77, 0]} castShadow>
           <boxGeometry args={[1.04, 1.5, 0.018]} />
-          <meshStandardMaterial
-            color={frosted ? "#dbeafe" : "#bfe8ff"}
-            roughness={frosted ? 0.5 : 0.08}
-            metalness={frosted ? 0.05 : 0.2}
-            transparent
-            opacity={frosted ? 0.58 : 0.38}
-            depthWrite={false}
-          />
+          {frosted ? (
+            // toilet doors are solid: no see-through into the cubicle
+            <meshStandardMaterial color="#e8eef5" roughness={0.55} metalness={0.02} />
+          ) : (
+            <meshStandardMaterial
+              color="#bfe8ff"
+              roughness={0.08}
+              metalness={0.2}
+              transparent
+              opacity={0.38}
+              depthWrite={false}
+            />
+          )}
         </mesh>
         {/* metal stiles and rails */}
         {[0.02, 1.04].map((x) => (
@@ -440,7 +450,7 @@ function Desk({ cx, top, agent }: { cx: number; top: number; agent?: import("@/l
         </group>
         {working && <pointLight position={[0, 0.75, 0.2]} intensity={2.2} distance={1.6} color="#a5f3fc" />}
       </group>
-      <Chair position={[0, 0, 0.85]} rotation={0} />
+      <Chair position={[0, 0, (DESK_SIZE.depth + DESK_APPROACH) / 2]} rotation={0} />
     </group>
   );
 }
@@ -504,39 +514,133 @@ function MeetingSet() {
         />
       ))}
 
-      {/* projector screen */}
-      <group position={[PROJECTOR.x, 1.92, PROJECTOR.y]}>
-        <mesh castShadow>
-          <boxGeometry args={[PROJECTOR.width + 0.12, PROJECTOR.height + 0.12, 0.08]} />
-          <meshStandardMaterial color="#0f172a" />
-        </mesh>
-        <mesh position={[0, 0, 0.045]}>
-          <planeGeometry args={[PROJECTOR.width, PROJECTOR.height]} />
-          <meshStandardMaterial color="#062a33" emissive="#0891b2" emissiveIntensity={0.45} roughness={0.2} />
-        </mesh>
-        {!speaking && (
-          <PortalHtml position={[0, 0, 0.06]} center zIndexRange={[50, 0]} style={{ pointerEvents: "none" }}>
-            <div className="w-[220px] text-center">
-              <p className="text-[7px] font-black uppercase tracking-[0.25em] text-cyan-300">live agenda</p>
-              <p className="mt-1 line-clamp-3 text-[9px] font-semibold leading-snug text-slate-100">
-                <ProjectorTopic />
-              </p>
-            </div>
-          </PortalHtml>
-        )}
-      </group>
+      {/* projector screen with text rendered directly inside canvas texture */}
+      <ProjectorScreen />
     </group>
   );
 }
 
-function ProjectorTopic() {
+function ProjectorScreen() {
   const meeting = useOffice((s) => s.meeting);
-  return <>{meeting ? meeting.topic : "Belum ada rapat — panggil tim dari panel orkestrasi."}</>;
+  const live = meeting?.transcript.filter((m) => m.kind === "meeting").at(-1);
+  const speaker = useOffice((s) =>
+    meeting?.speakingId ? s.agents.find((a) => a.id === meeting.speakingId) : undefined,
+  );
+
+  const texture = useMemo(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 512;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    // Background
+    ctx.fillStyle = "#061826";
+    ctx.fillRect(0, 0, 1024, 512);
+
+    // Cyan glowing frame
+    ctx.strokeStyle = "#0891b2";
+    ctx.lineWidth = 10;
+    ctx.strokeRect(16, 16, 992, 480);
+
+    // Top status bar
+    ctx.fillStyle = "#0f2f42";
+    ctx.fillRect(22, 22, 980, 74);
+    ctx.fillStyle = "#22d3ee";
+    ctx.font = "bold 26px ui-monospace, monospace";
+    ctx.textAlign = "left";
+    ctx.fillText("LIVE AGENDA · ORCAI MEETING ROOM", 52, 68);
+
+    if (meeting) {
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#5eead4";
+      ctx.fillText(`PUTARAN ${meeting.currentRound}/${meeting.rounds}`, 970, 68);
+
+      // Meeting Topic inside screen
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 36px system-ui, sans-serif";
+
+      const words = meeting.topic.split(" ");
+      let line = "";
+      let y = 175;
+      for (const w of words) {
+        const test = line + w + " ";
+        if (ctx.measureText(test).width > 900 && line !== "") {
+          ctx.fillText(line.trim(), 512, y);
+          line = w + " ";
+          y += 50;
+        } else {
+          line = test;
+        }
+      }
+      ctx.fillText(line.trim(), 512, y);
+
+      // Current speaker quote box
+      if (speaker && live) {
+        ctx.fillStyle = "rgba(14, 165, 233, 0.22)";
+        ctx.fillRect(60, 335, 904, 130);
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(60, 335, 904, 130);
+
+        ctx.fillStyle = speaker.shirtColor;
+        ctx.font = "bold 26px system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(`● ${speaker.name} (${speaker.role}):`, 88, 380);
+
+        ctx.fillStyle = "#e2e8f0";
+        ctx.font = "24px system-ui, sans-serif";
+        const trimmed = live.content.length > 70 ? live.content.slice(0, 68) + "..." : live.content;
+        ctx.fillText(`"${trimmed}"`, 88, 424);
+      }
+    } else {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "bold 34px system-ui, sans-serif";
+      ctx.fillText("Belum ada rapat aktif", 512, 235);
+      ctx.fillStyle = "#64748b";
+      ctx.font = "24px system-ui, sans-serif";
+      ctx.fillText("Panggil tim melalui tab Meeting di panel orkestrasi", 512, 285);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  }, [meeting?.topic, meeting?.currentRound, meeting?.speakingId, live?.content]);
+
+  useEffect(() => () => texture?.dispose(), [texture]);
+
+  return (
+    <group position={[PROJECTOR.x, 1.92, PROJECTOR.y]}>
+      <mesh castShadow>
+        <boxGeometry args={[PROJECTOR.width + 0.12, PROJECTOR.height + 0.12, 0.08]} />
+        <meshStandardMaterial color="#0f172a" />
+      </mesh>
+      <mesh position={[0, 0, 0.045]}>
+        <planeGeometry args={[PROJECTOR.width, PROJECTOR.height]} />
+        {texture ? (
+          <meshStandardMaterial
+            map={texture}
+            emissiveMap={texture}
+            emissive="#ffffff"
+            emissiveIntensity={0.7}
+            roughness={0.25}
+            toneMapped={false}
+          />
+        ) : (
+          <meshStandardMaterial color="#062a33" emissive="#0891b2" emissiveIntensity={0.45} roughness={0.2} />
+        )}
+      </mesh>
+    </group>
+  );
 }
 
 function PrayerRoom() {
+  const focusedFloor = useOffice((s) => s.focusedFloor);
   return (
-    <group>
+    <group visible={focusedFloor === "all" || focusedFloor === 1}>
       {PRAYER_MATS.map((mat, i) => (
         <group key={i} position={[mat.x, 0, mat.y]}>
           <mesh rotation-x={-Math.PI / 2} position-y={0.03} receiveShadow>
@@ -815,6 +919,24 @@ function PantryRoom() {
       ))}
       <pointLight position={[-4.2, 2.4, 5.4]} intensity={5} distance={5} color="#fde68a" />
       <pointLight position={[-5.3, 1.6, 4.4]} intensity={2.4} distance={2.8} color="#fb923c" />
+
+      {/* bar stools — agents sit here facing the counter */}
+      {PANTRY_SEATS.map((seat) => (
+        <group key={`${seat.x},${seat.y}`} position={[seat.x, 0, seat.y]}>
+          <mesh position={[0, 0.55, 0]} castShadow>
+            <cylinderGeometry args={[0.2, 0.18, 0.06, 16]} />
+            <meshStandardMaterial color="#b98552" roughness={0.7} />
+          </mesh>
+          <mesh position={[0, 0.27, 0]}>
+            <cylinderGeometry args={[0.04, 0.05, 0.5, 8]} />
+            <meshStandardMaterial color="#334155" metalness={0.5} />
+          </mesh>
+          <mesh position={[0, 0.8, -0.18]} castShadow>
+            <boxGeometry args={[0.34, 0.42, 0.05]} />
+            <meshStandardMaterial color="#8a6238" roughness={0.75} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
@@ -885,11 +1007,7 @@ function LoungeRoom() {
           <planeGeometry args={[LOUNGE_TV.width + 0.15, 0.06]} />
           <meshBasicMaterial color="#e0f2fe" transparent opacity={0.22} blending={THREE.AdditiveBlending} depthWrite={false} />
         </mesh>
-        <PortalHtml position={[0, 0.38, -0.06]} center zIndexRange={[50, 0]}>
-          <div className="pointer-events-none text-[7px] font-black uppercase tracking-[0.2em] text-sky-200/90">
-            📺 NEWS
-          </div>
-        </PortalHtml>
+        <TvNewsLabel />
         <pointLight ref={tvLight} position={[0, 0, -0.7]} intensity={8} distance={6} color="#38bdf8" />
       </group>
 
@@ -963,8 +1081,8 @@ function LoungeRoom() {
         </mesh>
       </group>
 
-      {/* coffee table */}
-      <group position={[-0.3, 0, 3.4]}>
+      {/* coffee table — turned to line up with the sofa, clear of the walking lane */}
+      <group position={[-0.3, 0, 3.55]} rotation-y={Math.PI / 2}>
         <mesh position={[0, 0.36, 0]} castShadow receiveShadow>
           <boxGeometry args={[1.15, 0.06, 0.62]} />
           <meshStandardMaterial color="#8a6238" roughness={0.6} />
@@ -1002,7 +1120,7 @@ function LoungeRoom() {
       </group>
 
       {/* floor lamp */}
-      <group position={[1.7, 0, 5.9]}>
+      <group position={[1.7, 0, 5.15]}>
         <mesh position={[0, 0.9, 0]} castShadow>
           <cylinderGeometry args={[0.025, 0.03, 1.8, 8]} />
           <meshStandardMaterial color="#64748b" metalness={0.6} roughness={0.3} />
@@ -1014,6 +1132,146 @@ function LoungeRoom() {
         <pointLight position={[0, 1.72, 0]} intensity={2} distance={3.2} color="#fde68a" />
       </group>
     </group>
+  );
+}
+
+/**
+ * Two glass leaves that slide apart automatically when someone reaches the
+ * lobby threshold. Closed, they meet exactly at x = -0.4 with no gap.
+ */
+function SlidingDoor() {
+  const left = useRef<THREE.Mesh>(null);
+  const right = useRef<THREE.Mesh>(null);
+  const openRef = useRef(0);
+
+  useFrame((_, delta) => {
+    const near = [...agentPositions.values()].some(
+      (agent) => Math.abs(agent.x + 0.4) < 1.7 && Math.abs(agent.y - 7.2) < 0.9,
+    );
+    openRef.current = THREE.MathUtils.damp(openRef.current, near ? 1 : 0, 7, delta);
+    const slide = openRef.current * 0.87;
+    if (left.current) left.current.position.x = -0.4 - 0.435 - slide;
+    if (right.current) right.current.position.x = -0.4 + 0.435 + slide;
+  });
+
+  return (
+    <>
+      {[left, right].map((ref, i) => (
+        <mesh key={i} ref={ref} position={[-0.4 + (i === 0 ? -0.435 : 0.435), 1.0, 7.2]}>
+          <boxGeometry args={[0.87, 1.9, 0.03]} />
+          <meshStandardMaterial
+            color="#7dd3fc"
+            transparent
+            opacity={0.3}
+            emissive="#0ea5e9"
+            emissiveIntensity={0.2}
+            metalness={0.5}
+            roughness={0.1}
+          />
+        </mesh>
+      ))}
+    </>
+  );
+}
+
+function FrontLobby({ night }: { night: boolean }) {
+  return (
+    <group>
+      {/* tile floor carved out of the lounge's south end */}
+      <mesh rotation-x={-Math.PI / 2} position={[-0.1, 0.018, 6.325]} receiveShadow>
+        <planeGeometry args={[4.32, 1.95]} />
+        <meshStandardMaterial color="#dce3e8" roughness={0.9} />
+      </mesh>
+      {/* runner rug */}
+      <mesh rotation-x={-Math.PI / 2} position={[-0.4, 0.024, 6.55]}>
+        <planeGeometry args={[2.4, 1.0]} />
+        <meshStandardMaterial color="#0f766e" roughness={0.95} />
+      </mesh>
+      {/* half-wall separating lounge and lobby, wide opening in the middle */}
+      <Wall from={[-2.2, 5.4]} to={[-1.3, 5.4]} height={0.38} color="#93a5b8" />
+      <Wall from={[1.3, 5.4]} to={[2.0, 5.4]} height={0.38} color="#93a5b8" />
+
+      {/* front glass door on the south face, aligned with the entrance atrium */}
+      {[-1.35, 1.35].map((x) => (
+        <mesh key={`lobby-post-${x}`} position={[x, 1.0, 7.2]} castShadow>
+          <boxGeometry args={[0.09, 2.0, 0.09]} />
+          <meshStandardMaterial color="#334155" metalness={0.75} roughness={0.25} />
+        </mesh>
+      ))}
+      {/* sliding glass panels part when anyone reaches the threshold */}
+      <SlidingDoor />
+      <mesh position={[-0.4, 2.05, 7.2]} castShadow>
+        <boxGeometry args={[2.0, 0.12, 0.12]} />
+        <meshStandardMaterial color="#334155" metalness={0.75} roughness={0.25} />
+      </mesh>
+      {/* warm lobby glow behind the glass */}
+      <mesh position={[-0.4, 1.0, 7.14]}>
+        <planeGeometry args={[1.7, 1.5]} />
+        <meshStandardMaterial color="#1a2c3d" emissive="#fcd68a" emissiveIntensity={night ? 1.2 : 0.5} />
+      </mesh>
+      {/* threshold */}
+      <mesh position={[-0.4, 0.03, 7.0]} receiveShadow>
+        <boxGeometry args={[2.1, 0.05, 0.4]} />
+        <meshStandardMaterial color="#b7c1c9" roughness={0.9} />
+      </mesh>
+
+      {/* reception desk against the east wall */}
+      <group position={[1.72, 0, 6.3]}>
+        <mesh position={[0, 0.43, 0]} castShadow>
+          <boxGeometry args={[0.5, 0.85, 1.3]} />
+          <meshStandardMaterial color="#0f172a" metalness={0.4} roughness={0.4} />
+        </mesh>
+        <mesh position={[0, 0.88, 0]} castShadow>
+          <boxGeometry args={[0.58, 0.06, 1.4]} />
+          <meshStandardMaterial color="#94a3b8" metalness={0.6} roughness={0.3} />
+        </mesh>
+        <mesh position={[-0.27, 0.45, 0]}>
+          <boxGeometry args={[0.05, 0.4, 1.0]} />
+          <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={0.5} />
+        </mesh>
+        <group position={[-0.1, 1.06, 0.1]} rotation-y={-Math.PI / 2}>
+          <mesh>
+            <boxGeometry args={[0.46, 0.3, 0.05]} />
+            <meshStandardMaterial color="#0f172a" />
+          </mesh>
+          <mesh position={[0, 0, -0.03]}>
+            <planeGeometry args={[0.4, 0.24]} />
+            <meshStandardMaterial color="#082f49" emissive="#0ea5e9" emissiveIntensity={0.6} />
+          </mesh>
+        </group>
+      </group>
+
+      <LobbyLabel />
+      <pointLight position={[-0.4, 2.1, 6.3]} intensity={night ? 5 : 2.5} distance={5} color="#ffe6b8" />
+    </group>
+  );
+}
+
+function LobbyParkingLabel() {
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  if (focusedFloor !== "all" && focusedFloor !== 1) return null;
+  return (
+    <PortalHtml position={[0, 4.0, 0]} center distanceFactor={11} zIndexRange={[60, 0]}>
+      <div className="pointer-events-none flex items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-300/40 bg-slate-950/90 px-2 py-1 text-[8px] font-black uppercase tracking-[0.16em] text-emerald-200 shadow-xl">
+        🅿️ Lobby · Parkiran
+      </div>
+    </PortalHtml>
+  );
+}
+
+function LobbyLabel() {
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  if (focusedFloor !== "all" && focusedFloor !== 1) return null;
+  return (
+    <PortalHtml position={[-0.4, 2.3, 6.4]} center distanceFactor={12} zIndexRange={[55, 0]}>
+      <div
+        className="pointer-events-none flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-[1px] text-[7px] font-black uppercase tracking-[0.12em] shadow-lg"
+        style={{ color: "#67e8f9", borderColor: "#67e8f955", background: "rgba(3,7,18,0.82)", backdropFilter: "blur(4px)" }}
+      >
+        <span className="h-1 w-1 rounded-full" style={{ background: "#67e8f9" }} />
+        Lobby
+      </div>
+    </PortalHtml>
   );
 }
 
@@ -1063,9 +1321,15 @@ function CorridorSofa() {
   );
 }
 
-function Bed({ position }: { position: [number, number, number] }) {
+function Bed({
+  position,
+  rotation = 0,
+}: {
+  position: [number, number, number];
+  rotation?: number;
+}) {
   return (
-    <group position={position}>
+    <group position={position} rotation-y={rotation}>
       <mesh position={[0, 0.27, 0]} castShadow receiveShadow>
         <boxGeometry args={[1.75, 0.22, 2.25]} />
         <meshStandardMaterial color="#4b3a54" roughness={0.85} />
@@ -1102,27 +1366,14 @@ function Bed({ position }: { position: [number, number, number] }) {
 function SickBayRoom() {
   return (
     <group>
-      {/* two recovery beds */}
-      <Bed position={[8.05, 0, 3.3]} />
-      <Bed position={[3.3, 0, 5.65]} />
-      {/* privacy curtains */}
-      <mesh position={[7.05, 1.15, 5.15]}>
-        <boxGeometry args={[0.04, 1.5, 2.1]} />
-        <meshStandardMaterial color="#94a3b8" transparent opacity={0.22} roughness={0.9} />
-      </mesh>
-      <mesh position={[4.45, 1.15, 5.65]}>
-        <boxGeometry args={[0.04, 1.5, 2.1]} />
-        <meshStandardMaterial color="#94a3b8" transparent opacity={0.22} roughness={0.9} />
-      </mesh>
-      <mesh position={[4.45, 1.92, 5.65]} rotation-z={Math.PI / 2}>
-        <cylinderGeometry args={[0.02, 0.02, 2.2, 8]} />
-        <meshStandardMaterial color="#64748b" metalness={0.6} />
-      </mesh>
+      {/* two recovery beds at the top-right corner, headboard facing east toward parking */}
+      <Bed position={[8.0, 0, 5.85]} rotation={-Math.PI / 2} />
+      <Bed position={[8.0, 0, 3.65]} rotation={-Math.PI / 2} />
 
-      {/* bedside table + reading lamp */}
-      <group position={[4.55, 0, 4.62]}>
+      {/* bedside table + reading lamp between the two beds */}
+      <group position={[8.65, 0, 4.75]}>
         <mesh position={[0, 0.35, 0]} castShadow>
-          <boxGeometry args={[0.46, 0.7, 0.46]} />
+          <boxGeometry args={[0.42, 0.7, 0.42]} />
           <meshStandardMaterial color="#e2e8f0" roughness={0.55} />
         </mesh>
         <mesh position={[0, 0.72, 0]}>
@@ -1136,8 +1387,18 @@ function SickBayRoom() {
         <pointLight position={[0, 1.0, 0]} intensity={1.6} distance={2.6} color="#fde68a" />
       </group>
 
-      {/* medical cart + monitor */}
-      <group position={[5.2, 0, 6.45]}>
+      {/* privacy curtain dividing the beds */}
+      <mesh position={[8.0, 1.15, 4.75]}>
+        <boxGeometry args={[2.1, 1.5, 0.04]} />
+        <meshStandardMaterial color="#94a3b8" transparent opacity={0.22} roughness={0.9} />
+      </mesh>
+      <mesh position={[8.0, 1.92, 4.75]} rotation-x={Math.PI / 2}>
+        <cylinderGeometry args={[0.02, 0.02, 2.2, 8]} />
+        <meshStandardMaterial color="#64748b" metalness={0.6} />
+      </mesh>
+
+      {/* medical cart + monitor on the left */}
+      <group position={[5.4, 0, 6.2]}>
         <mesh position={[0, 0.45, 0]} castShadow>
           <boxGeometry args={[0.7, 0.9, 0.5]} />
           <meshStandardMaterial color="#cbd5e1" metalness={0.35} roughness={0.4} />
@@ -1159,8 +1420,8 @@ function SickBayRoom() {
         <pointLight position={[0, 1.1, 0.2]} intensity={1.2} distance={2} color="#22c55e" />
       </group>
 
-      {/* framed get-well poster on the south wall */}
-      <group position={[3.35, 1.55, 7.12]}>
+      {/* framed get-well poster on the wall */}
+      <group position={[6.7, 1.55, 7.15]}>
         <mesh>
           <boxGeometry args={[0.95, 0.72, 0.05]} />
           <meshStandardMaterial color="#1f2d3d" />
@@ -1177,17 +1438,6 @@ function SickBayRoom() {
           <boxGeometry args={[0.1, 0.3, 0.005]} />
           <meshStandardMaterial color="#fb7185" />
         </mesh>
-      </group>
-      <group position={[8.05, 0, 1.95]}>
-        <mesh position={[0, 0.24, 0]} castShadow>
-          <boxGeometry args={[0.55, 0.48, 0.45]} />
-          <meshStandardMaterial color="#5b412a" roughness={0.8} />
-        </mesh>
-        <mesh position={[0, 0.58, 0]}>
-          <cylinderGeometry args={[0.07, 0.1, 0.18, 12]} />
-          <meshStandardMaterial color="#f8fafc" emissive="#fde68a" emissiveIntensity={0.25} />
-        </mesh>
-        <pointLight position={[0, 0.7, 0]} intensity={1.2} distance={2.2} color="#fde68a" />
       </group>
 
       {/* medical cross + cabinet */}
@@ -1347,7 +1597,7 @@ function useGrassTexture() {
     const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(14, 11);
+    texture.repeat.set(48, 48);
     texture.anisotropy = 8;
     return texture;
   }, []);
@@ -1407,6 +1657,96 @@ function Car({ x, z, color, rotation = 0 }: { x: number; z: number; color: strin
 
 const TRAFFIC_COLORS = ["#38bdf8", "#f97316", "#e2e8f0", "#a855f7", "#ef4444", "#22c55e", "#facc15"];
 
+/** Shared live car positions to avoid any car-vs-car collision on the road. */
+const liveCarMap = new Map<string, { x: number; z: number; dir: number }>();
+
+/**
+ * The car an agent drives: leaves the parking lot through the south driveway,
+ * merges onto the main road (z 11.7 westbound), loops back via eastbound lane (z 13.9),
+ * and parks smoothly without crashing into traffic cars.
+ */
+function ParkingDriveCar({ agentId }: { agentId: string }) {
+  const group = useRef<THREE.Group>(null);
+  const state = useRef({
+    x: 19.4,
+    z: 2.6,
+    rot: Math.PI / 2,
+    leg: 0,
+    wait: 0.5,
+    done: false,
+  });
+
+  const waypoints = [
+    { x: 19.4, z: 6.6, spd: 1.8 },   // 0: reverse out to aisle
+    { x: 12.0, z: 6.6, spd: 3.2 },   // 1: drive west down parking aisle
+    { x: 12.0, z: 9.6, spd: 2.8 },   // 2: drive south through driveway
+    { x: 12.0, z: 11.7, spd: 3.0 },  // 3: merge onto westbound main road
+    { x: -24.0, z: 11.7, spd: 4.6 }, // 4: cruise west along the main road
+    { x: -26.0, z: 12.8, spd: 2.5 }, // 5: curve south to switch lanes
+    { x: -24.0, z: 13.9, spd: 3.2 }, // 6: enter eastbound main road lane
+    { x: 12.0, z: 13.9, spd: 4.6 },  // 7: cruise east along main road
+    { x: 12.0, z: 9.6, spd: 2.8 },   // 8: turn north into driveway
+    { x: 12.0, z: 6.6, spd: 2.8 },   // 9: back in parking aisle
+    { x: 19.4, z: 6.6, spd: 3.2 },   // 10: drive east along aisle
+    { x: 19.4, z: 2.6, spd: 1.8 },   // 11: pull nose-in into parking slot
+  ];
+
+  useFrame((_, rawDelta) => {
+    const delta = Math.min(rawDelta, 0.05);
+    const car = state.current;
+    if (!car.done) {
+      if (car.wait > 0) {
+        car.wait -= delta;
+      } else {
+        const next = waypoints[car.leg];
+        const dx = next.x - car.x;
+        const dz = next.z - car.z;
+        const dist = Math.hypot(dx, dz);
+
+        // Anti-collision check with traffic car on the road
+        const traffic = liveCarMap.get("traffic");
+        let safe = true;
+        if (traffic) {
+          if (car.leg === 3 && traffic.x > 11.0 && traffic.x < 18.0) {
+            safe = false; // yield to approaching traffic before entering lane
+          } else if (car.leg === 4 && (car.x - traffic.x) > 0 && Math.hypot(traffic.x - car.x, traffic.z - car.z) < 5.2) {
+            safe = false; // keep safe distance behind traffic car
+          }
+        }
+
+        if (dist < 0.08) {
+          car.x = next.x;
+          car.z = next.z;
+          car.leg += 1;
+          if (car.leg >= waypoints.length) {
+            car.done = true;
+            liveCarMap.delete("driven");
+            useOffice.getState().endDrive(agentId);
+          }
+        } else if (safe) {
+          const step = Math.min(next.spd * delta, dist);
+          car.x += (dx / dist) * step;
+          car.z += (dz / dist) * step;
+          const targetRot = car.leg === 0 ? Math.PI / 2 : Math.atan2(-dz, dx);
+          const diff = Math.atan2(Math.sin(targetRot - car.rot), Math.cos(targetRot - car.rot));
+          car.rot += diff * (1 - Math.exp(-6 * delta));
+        }
+      }
+    }
+    if (group.current) {
+      group.current.position.set(car.x, 0, car.z);
+      group.current.rotation.y = car.rot;
+      liveCarMap.set("driven", { x: car.x, z: car.z, dir: car.leg < 6 ? -1 : 1 });
+    }
+  });
+
+  return (
+    <group ref={group} position={[19.4, 0, 2.6]}>
+      <Car x={0} z={0} color="#2dd4bf" />
+    </group>
+  );
+}
+
 function TrafficCar({
   axis,
   lane,
@@ -1433,13 +1773,28 @@ function TrafficCar({
     const cycle = ((t % period) + period) % period;
     const active = cycle < duration;
     ref.current.visible = active;
-    if (!active) return;
-    const range = axis === "x" ? 52 : 36;
-    const travelled = Math.min(range, cycle * speed);
-    const p = direction > 0 ? -range / 2 + travelled : range / 2 - travelled;
+    if (!active) {
+      liveCarMap.delete("traffic");
+      return;
+    }
+    const range = axis === "x" ? 56 : 36;
+    let travelled = Math.min(range, cycle * speed);
+    let p = direction > 0 ? -range / 2 + travelled : range / 2 - travelled;
+
+    // Check distance to driven car ahead in same lane
+    const driven = liveCarMap.get("driven");
+    if (driven && Math.abs(driven.z - lane) < 1.0) {
+      const aheadDist = (driven.x - p) * direction;
+      if (aheadDist > 0 && aheadDist < 5.2) {
+        // Slow down or pause to keep safe braking distance
+        p = driven.x - direction * 5.2;
+      }
+    }
+
     if (axis === "x") {
       ref.current.position.set(p, 0, lane);
       ref.current.rotation.y = direction > 0 ? 0 : Math.PI;
+      liveCarMap.set("traffic", { x: p, z: lane, dir: direction });
     } else {
       ref.current.position.set(lane, 0, p);
       ref.current.rotation.y = direction > 0 ? -Math.PI / 2 : Math.PI / 2;
@@ -1452,19 +1807,138 @@ function TrafficCar({
   );
 }
 
+function PedestrianFigure({
+  shirtColor,
+  pantsColor,
+  hairColor,
+  isFemale = false,
+}: {
+  shirtColor: string;
+  pantsColor: string;
+  hairColor: string;
+  isFemale?: boolean;
+}) {
+  const legL = useRef<THREE.Group>(null);
+  const legR = useRef<THREE.Group>(null);
+  const armL = useRef<THREE.Group>(null);
+  const armR = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    const phase = state.clock.elapsedTime * 6.2;
+    const swing = Math.sin(phase) * 0.45;
+    if (legL.current) legL.current.rotation.x = swing;
+    if (legR.current) legR.current.rotation.x = -swing;
+    if (armL.current) armL.current.rotation.x = -swing * 0.7;
+    if (armR.current) armR.current.rotation.x = swing * 0.7;
+  });
+
+  return (
+    <group position={[0, 0.45, 0]} scale={0.85}>
+      {/* torso */}
+      <mesh position={[0, 0.45, 0]} castShadow>
+        <boxGeometry args={[0.3, 0.38, 0.18]} />
+        <meshStandardMaterial color={shirtColor} roughness={0.8} />
+      </mesh>
+      {/* head */}
+      <mesh position={[0, 0.78, 0]} castShadow>
+        <sphereGeometry args={[0.13, 10, 10]} />
+        <meshStandardMaterial color="#f2c49b" roughness={0.7} />
+      </mesh>
+      {/* hair */}
+      <mesh position={[0, isFemale ? 0.79 : 0.84, isFemale ? -0.04 : 0]}>
+        <boxGeometry args={[0.27, isFemale ? 0.26 : 0.1, 0.22]} />
+        <meshStandardMaterial color={hairColor} roughness={0.9} />
+      </mesh>
+      {/* legs */}
+      <group ref={legL} position={[-0.08, 0.25, 0]}>
+        <mesh position={[0, -0.22, 0]} castShadow>
+          <boxGeometry args={[0.1, 0.44, 0.12]} />
+          <meshStandardMaterial color={pantsColor} roughness={0.85} />
+        </mesh>
+      </group>
+      <group ref={legR} position={[0.08, 0.25, 0]}>
+        <mesh position={[0, -0.22, 0]} castShadow>
+          <boxGeometry args={[0.1, 0.44, 0.12]} />
+          <meshStandardMaterial color={pantsColor} roughness={0.85} />
+        </mesh>
+      </group>
+      {/* arms */}
+      <group ref={armL} position={[-0.19, 0.55, 0]}>
+        <mesh position={[0, -0.18, 0]}>
+          <boxGeometry args={[0.07, 0.36, 0.08]} />
+          <meshStandardMaterial color={shirtColor} roughness={0.8} />
+        </mesh>
+      </group>
+      <group ref={armR} position={[0.19, 0.55, 0]}>
+        <mesh position={[0, -0.18, 0]}>
+          <boxGeometry args={[0.07, 0.36, 0.08]} />
+          <meshStandardMaterial color={shirtColor} roughness={0.8} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function Pedestrians() {
+  const p1 = useRef<THREE.Group>(null);
+  const p2 = useRef<THREE.Group>(null);
+  const st1 = useRef({ x: -16, dir: 1, wait: 0 });
+  const st2 = useRef({ x: 14, dir: -1, wait: 0 });
+
+  useFrame((_, rawDelta) => {
+    const delta = Math.min(rawDelta, 0.05);
+    const c1 = st1.current;
+    if (c1.wait > 0) {
+      c1.wait -= delta;
+    } else {
+      c1.x += c1.dir * 1.3 * delta;
+      if (c1.dir > 0 && c1.x >= 18) {
+        c1.dir = -1;
+        c1.wait = 2.4;
+      } else if (c1.dir < 0 && c1.x <= -18) {
+        c1.dir = 1;
+        c1.wait = 2.4;
+      }
+    }
+    if (p1.current) {
+      p1.current.position.set(c1.x, -0.3, 8.85);
+      p1.current.rotation.y = c1.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+
+    const c2 = st2.current;
+    if (c2.wait > 0) {
+      c2.wait -= delta;
+    } else {
+      c2.x += c2.dir * 1.1 * delta;
+      if (c2.dir > 0 && c2.x >= 16) {
+        c2.dir = -1;
+        c2.wait = 3.0;
+      } else if (c2.dir < 0 && c2.x <= -16) {
+        c2.dir = 1;
+        c2.wait = 3.0;
+      }
+    }
+    if (p2.current) {
+      p2.current.position.set(c2.x, -0.3, 8.85);
+      p2.current.rotation.y = c2.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+  });
+
+  return (
+    <group>
+      <group ref={p1}>
+        <PedestrianFigure shirtColor="#0284c7" pantsColor="#1e293b" hairColor="#292524" />
+      </group>
+      <group ref={p2}>
+        <PedestrianFigure shirtColor="#e11d48" pantsColor="#334155" hairColor="#78350f" isFemale />
+      </group>
+    </group>
+  );
+}
+
 function Traffic() {
   const cars = useMemo(
     () => [
-      {
-        axis: "z" as const,
-        lane: -14.6,
-        direction: 1 as const,
-        speed: 3.6,
-        offset: 4,
-        period: 38,
-        duration: 11,
-        color: "#e2e8f0",
-      },
       {
         axis: "x" as const,
         lane: 11.7,
@@ -1529,9 +2003,36 @@ function ExitDoorPanels() {
   );
 }
 
+function TvNewsLabel() {
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  if (focusedFloor !== "all" && focusedFloor !== 1) return null;
+  return (
+    <PortalHtml position={[0, 0.38, -0.06]} center zIndexRange={[50, 0]}>
+      <div className="pointer-events-none text-[7px] font-black uppercase tracking-[0.2em] text-sky-200/90">
+        📺 NEWS
+      </div>
+    </PortalHtml>
+  );
+}
+
+function ParkingExitLabel() {
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  if (focusedFloor !== "all" && focusedFloor !== 1) return null;
+  return (
+    <div className="pointer-events-none flex items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-300/40 bg-slate-950/90 px-2 py-1 text-[8px] font-black uppercase tracking-[0.16em] text-emerald-200 shadow-xl">
+      🅿️ Lobby · Parkiran
+    </div>
+  );
+}
+
 function ParkingExit() {
   return (
     <group position={[9.36, 0, 0]}>
+      {/* lobby mat on the corridor side */}
+      <mesh position={[-0.55, 0.03, 0]} receiveShadow>
+        <boxGeometry args={[0.85, 0.02, 2.35]} />
+        <meshStandardMaterial color="#0f766e" roughness={0.9} />
+      </mesh>
       {/* threshold + paving to the parking lot */}
       <mesh position={[0.35, 0.02, 0]} receiveShadow>
         <boxGeometry args={[1.0, 0.06, 2.6]} />
@@ -1565,9 +2066,7 @@ function ParkingExit() {
         <meshStandardMaterial color="#5eead4" emissive="#22d3ee" emissiveIntensity={0.9} />
       </mesh>
       <PortalHtml position={[0.25, 2.48, 0]} center distanceFactor={11} zIndexRange={[60, 0]}>
-        <div className="pointer-events-none flex items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-300/40 bg-slate-950/90 px-2 py-1 text-[8px] font-black uppercase tracking-[0.16em] text-emerald-200 shadow-xl">
-          🅿️ Exit · Parkiran
-        </div>
+        <ParkingExitLabel />
       </PortalHtml>
       <pointLight position={[0.8, 2.2, 0]} intensity={2.4} distance={3.4} color="#5eead4" />
     </group>
@@ -1590,7 +2089,7 @@ function useLocalTime() {
   return now;
 }
 
-function useSkyTexture(night: boolean) {
+function useSkyTexture(night: boolean, sunset = false) {
   return useMemo(() => {
     const canvas = document.createElement("canvas");
     canvas.width = 1024;
@@ -1604,6 +2103,12 @@ function useSkyTexture(night: boolean) {
       gradient.addColorStop(0.72, "#123a56");
       gradient.addColorStop(0.82, "#1f4a60");
       gradient.addColorStop(1, "#2a4a50");
+    } else if (sunset) {
+      gradient.addColorStop(0, "#1d2b63");
+      gradient.addColorStop(0.35, "#7c4a8a");
+      gradient.addColorStop(0.62, "#e2704f");
+      gradient.addColorStop(0.82, "#f7b267");
+      gradient.addColorStop(1, "#f6d8a8");
     } else {
       gradient.addColorStop(0, "#2b6cb0");
       gradient.addColorStop(0.45, "#74b4dc");
@@ -1616,11 +2121,11 @@ function useSkyTexture(night: boolean) {
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     return texture;
-  }, [night]);
+  }, [night, sunset]);
 }
 
-function SkyDome({ night }: { night: boolean }) {
-  const texture = useSkyTexture(night);
+function SkyDome({ night, sunset = false }: { night: boolean; sunset?: boolean }) {
+  const texture = useSkyTexture(night, sunset);
   return (
     <mesh renderOrder={-10}>
       <sphereGeometry args={[180, 32, 20]} />
@@ -1698,16 +2203,16 @@ function StarField() {
   );
 }
 
-function Celestial({ night }: { night: boolean }) {
+function Celestial({ night, sunset = false }: { night: boolean; sunset?: boolean }) {
   return (
-    <group position={night ? [48, 46, -78] : [62, 58, -72]}>
+    <group position={night ? [48, 46, -78] : sunset ? [-72, 14, -64] : [62, 58, -72]}>
       <mesh>
-        <sphereGeometry args={[night ? 2.1 : 2.8, 20, 16]} />
-        <meshBasicMaterial color={night ? "#dbeafe" : "#fef3c7"} fog={false} />
+        <sphereGeometry args={[night ? 2.1 : sunset ? 3.4 : 2.8, 20, 16]} />
+        <meshBasicMaterial color={night ? "#dbeafe" : sunset ? "#ffd7a1" : "#fef3c7"} fog={false} />
       </mesh>
       <mesh scale={2.1}>
-        <sphereGeometry args={[night ? 2.1 : 2.8, 20, 16]} />
-        <meshBasicMaterial color={night ? "#93c5fd" : "#fde68a"} transparent opacity={0.12} depthWrite={false} fog={false} />
+        <sphereGeometry args={[night ? 2.1 : sunset ? 3.4 : 2.8, 20, 16]} />
+        <meshBasicMaterial color={night ? "#93c5fd" : sunset ? "#ff9d5c" : "#fde68a"} transparent opacity={0.14} depthWrite={false} fog={false} />
       </mesh>
     </group>
   );
@@ -1749,9 +2254,9 @@ function ExteriorShell({ night }: { night: boolean }) {
   );
   return (
     <group position={[-0.4, 0, 0]}>
-      {/* plaza + steps */}
-      <mesh position={[0, -0.27, 8.6]} receiveShadow>
-        <boxGeometry args={[24, 0.18, 11]} />
+      {/* plaza + steps — stops at the curb so it never covers the sidewalk or road */}
+      <mesh position={[0, -0.27, 8.525]} receiveShadow>
+        <boxGeometry args={[10, 0.18, 2.35]} />
         <meshStandardMaterial color="#b8c4ca" roughness={0.95} />
       </mesh>
       {[0, 1, 2].map((step) => (
@@ -1837,25 +2342,23 @@ function ExteriorShell({ night }: { night: boolean }) {
           <meshStandardMaterial color="#67e8f9" emissive="#22d3ee" emissiveIntensity={night ? 0.7 : 0.25} metalness={0.5} />
         </mesh>
       ))}
-      {[0, 1, 2].map((row) =>
-        southWindows.map(({ col }) => {
-          const lit = (col * 7 + row * 3) % 4 === 0;
-          return (
-            <mesh key={`s-${row}-${col}`} position={[-9.2 + col * 2.04, 1.62 + row * 3.2, 7.44]}>
-              <boxGeometry args={[1.9, 2.62, 0.08]} />
-              <meshStandardMaterial
-                color={night ? "#0d2b3d" : "#9ecbe2"}
-                emissive={lit ? "#fbbf24" : "#0ea5e9"}
-                emissiveIntensity={night ? (lit ? 1.4 : 0.12) : 0.16}
-                transparent
-                opacity={0.78}
-                metalness={0.55}
-                roughness={0.18}
-              />
-            </mesh>
-          );
-        }),
-      )}
+      {southWindows.map(({ col, row }) => {
+        const lit = (col * 7 + row * 3) % 4 === 0;
+        return (
+          <mesh key={`s-${row}-${col}`} position={[-9.2 + col * 2.04, 1.62 + row * 3.2, 7.44]}>
+            <boxGeometry args={[1.9, 2.62, 0.08]} />
+            <meshStandardMaterial
+              color={night ? "#0d2b3d" : "#9ecbe2"}
+              emissive={lit ? "#fbbf24" : "#0ea5e9"}
+              emissiveIntensity={night ? (lit ? 1.4 : 0.12) : 0.16}
+              transparent
+              opacity={0.78}
+              metalness={0.55}
+              roughness={0.18}
+            />
+          </mesh>
+        );
+      })}
       {southWindows.filter((_, i) => i % 3 === 0).map(({ col, row }) => (
         <mesh key={`m-s-${row}-${col}`} position={[-9.2 + col * 2.04 + 1.02, 1.62 + row * 3.2, 7.55]}>
           <boxGeometry args={[0.06, 3.2, 0.1]} />
@@ -1865,6 +2368,8 @@ function ExteriorShell({ night }: { night: boolean }) {
       {[-1, 1].map((side) => (
         <group key={side} position={[side * 10.5, 0, 0]} rotation-y={side * Math.PI / 2}>
           {sideWindows.map(({ col, row }) => {
+            // leave a ground-floor opening for the east parking-lot lobby door
+            if (side === 1 && row === 0 && (col === 2 || col === 3)) return null;
             const lit = (col * 5 + row * 7) % 5 === 0;
             return (
               <mesh key={`w-${side}-${row}-${col}`} position={[-5.4 + col * 2.16, 1.62 + row * 3.2, 0.02]}>
@@ -1981,6 +2486,63 @@ function ExteriorShell({ night }: { night: boolean }) {
       ))}
       <pointLight position={[0, 4.2, 9.4]} intensity={night ? 8 : 3} distance={10} color="#67e8f9" />
       <pointLight position={[0, 2.7, 9.6]} intensity={night ? 9 : 4} distance={8} color="#ffe0a8" />
+
+      {/* east lobby entrance facing the parking lot */}
+      <group position={[10.42, 0, 0]} rotation-y={Math.PI / 2}>
+        {/* recessed atrium panel */}
+        <mesh position={[0, 1.95, 0.03]}>
+          <boxGeometry args={[4.4, 4.0, 0.08]} />
+          <meshStandardMaterial color="#0b1d2b" roughness={0.4} metalness={0.4} />
+        </mesh>
+        {/* warm lobby glow behind the glass */}
+        <mesh position={[0, 1.45, 0.075]}>
+          <planeGeometry args={[3.2, 2.4]} />
+          <meshStandardMaterial color="#1a2c3d" emissive="#fcd68a" emissiveIntensity={night ? 1.35 : 0.5} />
+        </mesh>
+        {/* glass double door */}
+        <mesh position={[0, 1.5, 0.12]}>
+          <boxGeometry args={[3.4, 3.0, 0.05]} />
+          <meshStandardMaterial color="#7dd3fc" transparent opacity={0.35} emissive="#0ea5e9" emissiveIntensity={night ? 0.5 : 0.15} metalness={0.5} roughness={0.1} />
+        </mesh>
+        {/* frame + mullions */}
+        {[-1.7, 0, 1.7].map((x) => (
+          <mesh key={`east-door-mullion-${x}`} position={[x, 1.5, 0.14]}>
+            <boxGeometry args={[0.07, 3.0, 0.06]} />
+            <meshStandardMaterial color="#334155" metalness={0.8} roughness={0.2} />
+          </mesh>
+        ))}
+        <mesh position={[0, 3.02, 0.14]}>
+          <boxGeometry args={[3.54, 0.1, 0.08]} />
+          <meshStandardMaterial color="#334155" metalness={0.8} roughness={0.2} />
+        </mesh>
+        <mesh position={[0, 0.04, 0.14]}>
+          <boxGeometry args={[3.54, 0.08, 0.08]} />
+          <meshStandardMaterial color="#334155" metalness={0.8} roughness={0.2} />
+        </mesh>
+        {/* canopy */}
+        <mesh position={[0, 3.42, 0.72]} castShadow>
+          <boxGeometry args={[5.2, 0.22, 1.5]} />
+          <meshStandardMaterial color="#0f172a" metalness={0.4} roughness={0.4} />
+        </mesh>
+        <mesh position={[0, 3.29, 1.46]}>
+          <boxGeometry args={[5.2, 0.06, 0.06]} />
+          <meshStandardMaterial color="#5eead4" emissive="#22d3ee" emissiveIntensity={0.9} />
+        </mesh>
+        {/* porch columns clear of the parked cars */}
+        {[-1.75, 1.75].map((x) => (
+          <mesh key={`east-door-column-${x}`} position={[x, 1.64, 0.85]} castShadow>
+            <cylinderGeometry args={[0.1, 0.12, 3.28, 12]} />
+            <meshStandardMaterial color="#334155" metalness={0.75} roughness={0.25} />
+          </mesh>
+        ))}
+        {/* threshold paving out to the lot */}
+        <mesh position={[0, 0.02, 0.55]} receiveShadow>
+          <boxGeometry args={[3.6, 0.06, 1.3]} />
+          <meshStandardMaterial color="#b7c1c9" roughness={0.9} />
+        </mesh>
+        <LobbyParkingLabel />
+        <pointLight position={[0, 2.4, 0.9]} intensity={night ? 6 : 2.2} distance={5.5} color="#5eead4" />
+      </group>
     </group>
   );
 }
@@ -2081,17 +2643,13 @@ function CorridorDecor() {
 
 function Outdoor() {
   const grass = useGrassTexture();
+  const drivingId = useOffice((s) => s.agents.find((a) => a.activity === "DRIVING")?.id ?? null);
   return (
     <group>
-      {/* endless lawn under every road and building */}
+      {/* endless lawn under every road and building — one surface so no box edge shows */}
       <mesh rotation-x={-Math.PI / 2} position={[0, -0.46, -6]} receiveShadow>
         <planeGeometry args={[320, 320]} />
-        <meshStandardMaterial color="#52744e" emissive="#0c170d" emissiveIntensity={0.35} roughness={1} />
-      </mesh>
-      {/* lawn */}
-      <mesh rotation-x={-Math.PI / 2} position={[0, -0.4, 2]} receiveShadow>
-        <planeGeometry args={[66, 52]} />
-        <meshStandardMaterial map={grass} color="#7da36b" roughness={1} />
+        <meshStandardMaterial map={grass} color="#7da36b" emissive="#0c170d" emissiveIntensity={0.35} roughness={1} />
       </mesh>
 
       {/* sidewalk + curb along the south face */}
@@ -2129,24 +2687,6 @@ function Outdoor() {
         </mesh>
       ))}
 
-      {/* side road on the west, visible from the office camera */}
-      <mesh rotation-x={-Math.PI / 2} position={[-15.8, -0.31, -1]} receiveShadow>
-        <planeGeometry args={[4.6, 36]} />
-        <meshStandardMaterial color="#1d252f" roughness={0.96} />
-      </mesh>
-      {Array.from({ length: 9 }).map((_, i) => (
-        <mesh key={i} rotation-x={-Math.PI / 2} position={[-15.8, -0.3, -17 + i * 4]}>
-          <planeGeometry args={[0.16, 2.1]} />
-          <meshStandardMaterial color="#fde68a" emissive="#fbbf24" emissiveIntensity={0.18} roughness={0.8} />
-        </mesh>
-      ))}
-      {/* zebra cross on the west road */}
-      {Array.from({ length: 6 }).map((_, i) => (
-        <mesh key={i} rotation-x={-Math.PI / 2} position={[-15.8, -0.29, 6.3 + i * 0.6]}>
-          <planeGeometry args={[4.0, 0.34]} />
-          <meshStandardMaterial color="#f1f5f9" roughness={0.8} emissive="#e2e8f0" emissiveIntensity={0.08} />
-        </mesh>
-      ))}
       <Traffic />
 
       {/* parking lot to the east */}
@@ -2168,6 +2708,14 @@ function Outdoor() {
       <Car x={13.4} z={2.6} color="#f97316" rotation={Math.PI / 2} />
       <Car x={15.4} z={2.6} color="#e2e8f0" rotation={Math.PI / 2} />
       <Car x={17.4} z={2.6} color="#a855f7" rotation={Math.PI / 2} />
+      {drivingId ? (
+        <ParkingDriveCar agentId={drivingId} />
+      ) : (
+        <Car x={19.4} z={2.6} color="#2dd4bf" rotation={Math.PI / 2} />
+      )}
+
+      {/* pedestrians walking on the sidewalk */}
+      <Pedestrians />
 
       {/* landscaping */}
       <Tree x={-11.5} z={4.4} scale={1.05} />
@@ -2236,44 +2784,148 @@ function Outdoor() {
   );
 }
 
+const CAT_NODES: { x: number; y: number }[] = [
+  { x: -1.7, y: 6.3 }, // basket
+  { x: -1.0, y: 4.6 },
+  { x: 0.0, y: 3.0 }, // lounge
+  { x: 0.0, y: 0.45 }, // corridor
+  { x: -4.5, y: 4.5 }, // pantry
+  { x: -6.5, y: 0.45 },
+  { x: -6.0, y: -4.0 }, // workstation
+  { x: 3.3, y: 3.0 }, // toilet
+  { x: 6.0, y: 0.45 },
+  { x: 7.5, y: 6.0 }, // sick bay
+  { x: -3.4, y: 8.6 }, // front plaza
+  { x: 3.4, y: 8.6 },
+];
+
+function pickCatNode(from: { x: number; y: number }) {
+  const far = CAT_NODES.filter((n) => Math.hypot(n.x - from.x, n.y - from.y) > 1.6);
+  const pool = far.length ? far : CAT_NODES;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 function Cat3D() {
   const root = useRef<THREE.Group>(null);
   const tail = useRef<THREE.Group>(null);
-  const stateRef = useRef({ x: -1.7, y: 6.3, target: 0, wait: 0 });
-  const path = useRef([
-    { x: -1.7, y: 6.3 },
-    { x: -1.2, y: 5.2 },
-    { x: -0.6, y: 4.8 },
-    { x: 0.0, y: 2.2 },
-    { x: 0.0, y: 1.3 },
-    { x: 1.0, y: 0.3 },
-    { x: -1.0, y: 0.3 },
-    { x: -2.2, y: 1.3 },
-    { x: -0.2, y: 2.2 },
-    { x: -1.0, y: 4.8 },
-    { x: -1.7, y: 6.3 },
-  ]);
+  const [dozing, setDozing] = useState(false);
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  const showLabels = focusedFloor === "all" || focusedFloor === 1;
+  const stateRef = useRef({
+    x: -1.7,
+    y: 6.3,
+    mode: "idle" as "idle" | "walk" | "sleep",
+    wait: 2,
+    path: [] as { x: number; y: number }[],
+    leg: 0,
+    goal: "wander" as "wander" | "basket",
+    sleepLeft: 0,
+    blocked: 0,
+    skipSleep: false,
+  });
 
-  useFrame((state, delta) => {
+  const repick = () => {
     const cat = stateRef.current;
-    const target = path.current[cat.target];
-    const dx = target.x - cat.x;
-    const dz = target.y - cat.y;
-    const dist = Math.hypot(dx, dz);
-    if (cat.wait > 0) {
-      cat.wait -= delta;
-    } else if (dist < 0.12) {
-      cat.wait = 1.4 + Math.random() * 2.8;
-      cat.target = (cat.target + 1) % path.current.length;
-    } else {
-      const step = Math.min(0.7 * delta, dist);
-      cat.x += (dx / dist) * step;
-      cat.y += (dz / dist) * step;
-      if (root.current) root.current.rotation.y = Math.atan2(-dz, dx);
+    const wantSleep = !cat.skipSleep && Math.random() < 0.25;
+    const target = wantSleep ? CAT_NODES[0] : pickCatNode(cat);
+    cat.path = planPath({ x: cat.x, y: cat.y }, target);
+    cat.leg = 0;
+    cat.goal = wantSleep ? "basket" : "wander";
+    cat.skipSleep = wantSleep;
+    cat.mode = "walk";
+    cat.blocked = 0;
+  };
+
+  useFrame((state, rawDelta) => {
+    const delta = Math.min(rawDelta, 0.05);
+    const cat = stateRef.current;
+    // Cat roams only while floor 1 is visible; otherwise park it inside the basket.
+    if (focusedFloor !== "all" && focusedFloor !== 1) {
+      cat.path = [];
+      cat.mode = "sleep";
+      cat.sleepLeft = 1e6;
+      cat.x = CAT_NODES[0].x;
+      cat.y = CAT_NODES[0].y;
+      if (root.current) root.current.position.set(cat.x, 0.06, cat.y);
+      return;
     }
+    if (cat.sleepLeft > 1e5) {
+      cat.sleepLeft = 0;
+      cat.wait = 0.5;
+    }
+
+    if (cat.mode === "sleep") {
+      cat.sleepLeft -= delta;
+      if (cat.sleepLeft <= 0) {
+        cat.mode = "idle";
+        cat.wait = 0.8 + Math.random() * 2.5;
+        setDozing(false);
+      }
+    } else if (cat.mode === "idle") {
+      cat.wait -= delta;
+      if (cat.wait <= 0) repick();
+    } else {
+      // walking
+      if (cat.wait > 0) {
+        // paused in front of a closed door — mirrors the <Door /> rule
+        cat.wait -= delta;
+      } else {
+        const next = cat.path[cat.leg];
+        if (!next) {
+          if (cat.goal === "basket") {
+            cat.mode = "sleep";
+            cat.sleepLeft = 12 + Math.random() * 16;
+            cat.blocked = 0;
+            setDozing(true);
+            if (root.current) root.current.rotation.y = 1.2;
+          } else {
+            cat.mode = "idle";
+            cat.wait = 1 + Math.random() * 3.5;
+          }
+        } else {
+          const catRoom = roomAt({ x: cat.x, y: cat.y });
+          const nextRoom = roomAt(next);
+          if (nextRoom && nextRoom !== "corridor" && nextRoom !== catRoom) {
+            const room = ROOMS[nextRoom];
+            const nearDoor = Math.hypot(cat.x - room.door.x, cat.y - room.door.y) < 1.05;
+            const open = [...agentPositions.values()].some(
+              (a) => Math.hypot(a.x - room.door.x, a.y - room.door.y) < 0.45,
+            );
+            if (nearDoor && !open) {
+              cat.wait = 0.6;
+              cat.blocked += 0.6;
+              if (cat.blocked > 10) {
+                // give up on this room and wander somewhere else
+                cat.mode = "idle";
+                cat.wait = 0;
+                cat.blocked = 0;
+              }
+            }
+          }
+          const dx = next.x - cat.x;
+          const dz = next.y - cat.y;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 0.1) {
+            cat.leg += 1;
+          } else {
+            const step = Math.min(0.7 * delta, dist);
+            cat.x += (dx / dist) * step;
+            cat.y += (dz / dist) * step;
+            cat.blocked = 0;
+            if (root.current) root.current.rotation.y = Math.atan2(-dz, dx);
+          }
+        }
+      }
+    }
+
     if (root.current) {
       root.current.position.set(cat.x, 0, cat.y);
-      root.current.position.y = cat.wait > 0 ? 0 : Math.abs(Math.sin(state.clock.elapsedTime * 8)) * 0.025;
+      root.current.position.y =
+        cat.mode === "sleep"
+          ? 0.06 // curled up inside the basket
+          : cat.mode === "walk"
+            ? Math.abs(Math.sin(state.clock.elapsedTime * 8)) * 0.025
+            : 0;
     }
     if (tail.current) {
       tail.current.rotation.z = Math.sin(state.clock.elapsedTime * 2.6) * 0.28;
@@ -2328,11 +2980,18 @@ function Cat3D() {
           </mesh>
         )),
       )}
-      <PortalHtml position={[0, 0.62, 0]} center distanceFactor={7} zIndexRange={[70, 0]}>
-        <div className="pointer-events-none whitespace-nowrap rounded-full border border-amber-300/40 bg-slate-950/80 px-1.5 py-[1px] text-[8px] font-bold text-amber-200">
-          🐈 Mochi
-        </div>
-      </PortalHtml>
+      {showLabels && (
+        <PortalHtml position={[0, 0.62, 0]} center distanceFactor={7} zIndexRange={[70, 0]}>
+          <div className="pointer-events-none whitespace-nowrap rounded-full border border-amber-300/40 bg-slate-950/80 px-1.5 py-[1px] text-[8px] font-bold text-amber-200">
+            🐈 Mochi
+          </div>
+        </PortalHtml>
+      )}
+      {showLabels && dozing && (
+        <PortalHtml position={[0.1, 0.5, 0]} center distanceFactor={7} zIndexRange={[71, 0]}>
+          <div className="pointer-events-none text-[10px] font-black text-sky-200">💤</div>
+        </PortalHtml>
+      )}
     </group>
   );
 }
@@ -2414,6 +3073,7 @@ function Bookshelf() {
 }
 
 function DigitalClock() {
+  const focusedFloor = useOffice((s) => s.focusedFloor);
   const [time, setTime] = useState("");
   useEffect(() => {
     const tick = () =>
@@ -2429,6 +3089,8 @@ function DigitalClock() {
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
   }, []);
+  // the lobby clock belongs to floor 1 — hide it while another floor is in focus
+  if (focusedFloor !== "all" && focusedFloor !== 1) return null;
   return (
     <group position={[-2.6, 1.7, -7.08]}>
       <mesh>
@@ -2448,11 +3110,413 @@ function DigitalClock() {
   );
 }
 
+
+/* --------------------------------- 3 floors & elevator --------------------------------- */
+
+function Elevator({
+  focusedFloor,
+  agents,
+}: {
+  focusedFloor: 1 | 2 | 3 | "all";
+  agents: import("@/lib/types").AgentRuntime[];
+}) {
+  const cabRef = useRef<THREE.Group>(null);
+  const currentCabY = useRef(0);
+  const floorY = (f: number) => (f === 3 ? 6.4 : f === 2 ? 3.2 : 0);
+
+  // Cab only travels when someone is actually riding it — focusing a floor
+  // must not drag the lift along.
+  const rider = agents.find((a) => a.activity === "ELEVATOR" && a.cabin);
+  const targetY = rider && rider.cabin ? floorY(rider.cabin.to) : currentCabY.current;
+
+  useFrame((_, delta) => {
+    currentCabY.current = THREE.MathUtils.damp(currentCabY.current, targetY, 2.2, delta);
+    if (cabRef.current) cabRef.current.position.y = currentCabY.current;
+    liftState.cabY = currentCabY.current;
+  });
+
+  const showFloorLabel = (floorNum: number) =>
+    focusedFloor === "all" || focusedFloor === floorNum;
+  const currentFloor = Math.round(currentCabY.current / 3.2) + 1;
+
+  return (
+    <group position={[-9.2, 0, 0]}>
+      {/* 4 corner steel pillars for the shaft */}
+      {[
+        [-0.6, -0.6],
+        [0.6, -0.6],
+        [-0.6, 0.6],
+        [0.6, 0.6],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, 4.8, z]}>
+          <boxGeometry args={[0.08, 9.6, 0.08]} />
+          <meshStandardMaterial color="#334155" metalness={0.8} roughness={0.2} />
+        </mesh>
+      ))}
+      {/* glass shaft enclosure */}
+      <mesh position={[0, 4.8, -0.6]}>
+        <boxGeometry args={[1.2, 9.6, 0.02]} />
+        <meshStandardMaterial color="#67e8f9" transparent opacity={0.16} roughness={0.1} />
+      </mesh>
+      <mesh position={[0, 4.8, 0.6]}>
+        <boxGeometry args={[1.2, 9.6, 0.02]} />
+        <meshStandardMaterial color="#67e8f9" transparent opacity={0.16} roughness={0.1} />
+      </mesh>
+      <mesh position={[-0.6, 4.8, 0]}>
+        <boxGeometry args={[0.02, 9.6, 1.2]} />
+        <meshStandardMaterial color="#67e8f9" transparent opacity={0.16} roughness={0.1} />
+      </mesh>
+
+      {/* sliding floor doors on each level */}
+      {[0, 3.2, 6.4].map((y, idx) => {
+        const floorNum = idx + 1;
+        const isCurrentFloor = currentFloor === floorNum;
+        return (
+          <group key={y} position={[0.6, y, 0]}>
+            <mesh position={[0, 1.05, 0]}>
+              <boxGeometry args={[0.06, 2.1, 1.1]} />
+              <meshStandardMaterial color="#1e293b" metalness={0.6} />
+            </mesh>
+            <mesh position={[0.04, 2.18, 0]}>
+              <boxGeometry args={[0.06, 0.12, 0.32]} />
+              <meshStandardMaterial color="#0f172a" />
+            </mesh>
+            <mesh position={[0.08, 2.18, 0]}>
+              <sphereGeometry args={[0.03, 8, 8]} />
+              <meshStandardMaterial
+                color={isCurrentFloor ? "#34d399" : "#38bdf8"}
+                emissive={isCurrentFloor ? "#34d399" : "#38bdf8"}
+                emissiveIntensity={1.4}
+              />
+            </mesh>
+            {/* floor tag only shows on its own floor */}
+            {showFloorLabel(floorNum) && (
+              <PortalHtml position={[0.1, 2.38, 0]} center distanceFactor={11} zIndexRange={[52, 0]}>
+                <div className="pointer-events-none rounded bg-slate-950/80 px-1 py-0.5 text-[7px] font-bold text-cyan-200">
+                  L{floorNum} 🛗
+                </div>
+              </PortalHtml>
+            )}
+          </group>
+        );
+      })}
+
+      {/* moving elevator cab */}
+      <group ref={cabRef} position={[0, 0, 0]}>
+        <mesh position={[0, 0.03, 0]}>
+          <boxGeometry args={[1.1, 0.06, 1.1]} />
+          <meshStandardMaterial color="#475569" metalness={0.7} roughness={0.3} />
+        </mesh>
+        <mesh position={[0, 2.05, 0]}>
+          <boxGeometry args={[1.1, 0.06, 1.1]} />
+          <meshStandardMaterial color="#334155" metalness={0.5} roughness={0.4} />
+        </mesh>
+        <mesh position={[-0.52, 1.05, 0]}>
+          <boxGeometry args={[0.02, 2.0, 1.05]} />
+          <meshStandardMaterial color="#7dd3fc" transparent opacity={0.32} roughness={0.1} />
+        </mesh>
+        <mesh position={[0, 1.05, -0.52]}>
+          <boxGeometry args={[1.05, 2.0, 0.02]} />
+          <meshStandardMaterial color="#7dd3fc" transparent opacity={0.32} roughness={0.1} />
+        </mesh>
+        <mesh position={[0, 1.05, 0.52]}>
+          <boxGeometry args={[1.05, 2.0, 0.02]} />
+          <meshStandardMaterial color="#7dd3fc" transparent opacity={0.32} roughness={0.1} />
+        </mesh>
+        <pointLight position={[0, 1.9, 0]} intensity={3.5} distance={3.0} color="#fef08a" />
+      </group>
+    </group>
+  );
+}
+
+function Floor2({ visible = true, ghost = false }: { visible?: boolean; ghost?: boolean }) {
+  if (!visible) return null;
+  const std = {
+    transparent: ghost,
+    opacity: ghost ? 0.18 : 1,
+    depthWrite: !ghost,
+  } as const;
+  // Floor-local bounds: x -10.4..10.4, z -7.4..7.4 (group offset x=-0.4, y=3.2)
+  return (
+    <group position={[-0.4, 3.2, 0]}>
+      {/* Floor slab — also the deck Lantai 3 stands on, so it must stay opaque */}
+      <mesh position={[0, -0.06, 0]} receiveShadow>
+        <boxGeometry args={[20.8, 0.12, 14.8]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.8} />
+      </mesh>
+      {/* Base floor: rooms, corridor and shell are all drawn by <Floor2Plan /> */}
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.006, 0]} receiveShadow>
+        <planeGeometry args={[20.6, 14.6]} />
+        <meshStandardMaterial color="#8b9aa8" roughness={0.95} {...std} />
+      </mesh>
+      {!ghost && (
+        <PortalHtml position={[0, 2.9, -7.4]} center distanceFactor={12} zIndexRange={[55, 0]}>
+          <div className="pointer-events-none flex items-center gap-1.5 whitespace-nowrap rounded-md border border-cyan-400/40 bg-slate-950/85 px-2 py-1 text-[8px] font-black uppercase tracking-[0.16em] text-cyan-200 shadow-xl backdrop-blur">
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+            Lantai 2 · Perkantoran
+          </div>
+        </PortalHtml>
+      )}
+    </group>
+  );
+}
+
+function Floor3({ visible = true }: { visible?: boolean }) {
+  if (!visible) return null;
+  // Floor-local bounds: x -10.4..10.4, z -7.4..7.4 (group offset x=-0.4, y=6.4)
+  const CAFE_TABLES: [number, number][] = [
+    [-7.2, 1.2],
+    [-5.0, 1.2],
+    [-7.2, 3.4],
+    [-5.0, 3.4],
+    [3.0, 1.0],
+    [5.2, 1.0],
+    [7.4, 1.0],
+    [3.0, 3.4],
+    [5.2, 3.4],
+    [7.4, 3.4],
+  ];
+  return (
+    <group position={[-0.4, 6.4, 0]}>
+      <mesh position={[0, -0.06, 0]} receiveShadow>
+        <boxGeometry args={[20.8, 0.12, 14.8]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.8} />
+      </mesh>
+      {/* Sky lounge: open plan, no walls. Only slim glass balustrades mark the perimeter. */}
+      {[
+        [0, 0.55, 7.3, 20.6, 1.1, 0.05],
+        [0, 0.55, -7.3, 20.6, 1.1, 0.05],
+        [-10.3, 0.55, 0, 0.05, 1.1, 14.6],
+        [10.3, 0.55, 0, 0.05, 1.1, 14.6],
+      ].map(([x, y, z, sx, sy, sz], i) => (
+        <group key={i} position={[x, y, z]}>
+          <mesh>
+            <boxGeometry args={[sx, sy, sz]} />
+            <meshStandardMaterial color="#67e8f9" transparent opacity={0.16} roughness={0.1} depthWrite={false} />
+          </mesh>
+          {/* handrail cap so the edge still reads clearly from the lobby below */}
+          <mesh position={[0, 0.58, 0]}>
+            <boxGeometry args={[sx > sz ? sx : sx + 0.06, 0.06, sx > sz ? sz + 0.06 : sz]} />
+            <meshStandardMaterial color="#94a3b8" metalness={0.7} roughness={0.35} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Terrace decking (front half) */}
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.008, 4.2]} receiveShadow>
+        <planeGeometry args={[20.2, 6.4]} />
+        <meshStandardMaterial color="#8b6b47" roughness={0.92} />
+      </mesh>
+      {/* Garden turf (back half) */}
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.008, -3.6]} receiveShadow>
+        <planeGeometry args={[20.2, 7.2]} />
+        <meshStandardMaterial color="#2d5a37" roughness={0.9} />
+      </mesh>
+
+      {/* ---------------- cafe: counter + espresso bar ---------------- */}
+      <group position={[-7.6, 0, 5.6]}>
+        <mesh position={[0, 0.52, 0]} castShadow>
+          <boxGeometry args={[4.6, 1.04, 0.8]} />
+          <meshStandardMaterial color="#8b5a2b" roughness={0.7} />
+        </mesh>
+        <mesh position={[0, 1.08, 0]}>
+          <boxGeometry args={[4.8, 0.08, 0.92]} />
+          <meshStandardMaterial color="#1e293b" roughness={0.4} metalness={0.6} />
+        </mesh>
+        {/* espresso machine + display case */}
+        <mesh position={[-1.4, 1.28, 0]} castShadow>
+          <boxGeometry args={[0.8, 0.4, 0.5]} />
+          <meshStandardMaterial color="#334155" metalness={0.7} roughness={0.25} />
+        </mesh>
+        <mesh position={[0.9, 1.26, 0]} castShadow>
+          <boxGeometry args={[1.2, 0.3, 0.5]} />
+          <meshStandardMaterial color="#fde68a" emissive="#f59e0b" emissiveIntensity={0.35} roughness={0.3} />
+        </mesh>
+        {/* hanging sign */}
+        <mesh position={[0, 2.15, 0]}>
+          <boxGeometry args={[2.6, 0.5, 0.06]} />
+          <meshStandardMaterial color="#1f2937" />
+        </mesh>
+        <mesh position={[0, 2.15, 0.04]}>
+          <boxGeometry args={[2.4, 0.34, 0.02]} />
+          <meshStandardMaterial color="#f59e0b" emissive="#f59e0b" emissiveIntensity={0.5} />
+        </mesh>
+        <pointLight position={[0, 1.8, 0.6]} intensity={4} distance={4.5} color="#ffd9a0" />
+      </group>
+
+      {/* bar stools lined up at the cafe counter */}
+      {[-9.2, -8.0, -6.8, -5.6].map((x) => (
+        <group key={x} position={[x, 0, 4.7]}>
+          <mesh position={[0, 0.6, 0]} castShadow>
+            <cylinderGeometry args={[0.22, 0.22, 0.07, 16]} />
+            <meshStandardMaterial color="#a16207" roughness={0.7} />
+          </mesh>
+          <mesh position={[0, 0.3, 0]}>
+            <cylinderGeometry args={[0.04, 0.06, 0.56, 10]} />
+            <meshStandardMaterial color="#475569" metalness={0.6} roughness={0.3} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* ---------------- cafe seating: many small tables ---------------- */}
+      {CAFE_TABLES.map(([x, z], i) => (
+        <group key={`t${i}`} position={[x, 0, z]}>
+          <mesh position={[0, 0.5, 0]} castShadow>
+            <cylinderGeometry args={[0.42, 0.42, 0.05, 18]} />
+            <meshStandardMaterial color="#c79a63" roughness={0.7} />
+          </mesh>
+          <mesh position={[0, 0.25, 0]}>
+            <cylinderGeometry args={[0.05, 0.07, 0.5, 10]} />
+            <meshStandardMaterial color="#334155" metalness={0.5} roughness={0.4} />
+          </mesh>
+          {[
+            [0.62, 0],
+            [-0.62, 0],
+            [0, 0.62],
+            [0, -0.62],
+          ].map(([dx, dz], k) => (
+            <group key={k} position={[dx, 0, dz]}>
+              <mesh position={[0, 0.24, 0]} castShadow>
+                <cylinderGeometry args={[0.17, 0.17, 0.06, 12]} />
+                <meshStandardMaterial color="#7c2d12" roughness={0.85} />
+              </mesh>
+              <mesh position={[0, 0.12, 0]}>
+                <cylinderGeometry args={[0.03, 0.05, 0.24, 8]} />
+                <meshStandardMaterial color="#475569" metalness={0.5} />
+              </mesh>
+            </group>
+          ))}
+        </group>
+      ))}
+
+      {/* ---------------- cozy sofas with coffee tables ---------------- */}
+      {[[-1.4, 3.0], [1.4, 3.0]].map(([x, z], i) => (
+        <group key={`s${i}`} position={[x, 0, z]}>
+          <mesh position={[0, 0.28, 0]} castShadow>
+            <boxGeometry args={[1.9, 0.42, 0.8]} />
+            <meshStandardMaterial color={i === 0 ? "#0f766e" : "#7c3aed"} roughness={0.85} />
+          </mesh>
+          <mesh position={[0, 0.58, -0.32]} castShadow>
+            <boxGeometry args={[1.9, 0.5, 0.16]} />
+            <meshStandardMaterial color={i === 0 ? "#115e59" : "#5b21b6"} roughness={0.85} />
+          </mesh>
+          <mesh position={[0, 0.34, 0.85]} castShadow>
+            <cylinderGeometry args={[0.4, 0.4, 0.06, 18]} />
+            <meshStandardMaterial color="#c79a63" roughness={0.7} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* ---------------- sun loungers on the terrace ---------------- */}
+      {[-1.2, 1.2].map((dx, i) => (
+        <group key={`l${i}`} position={[7.9 + dx * 1.6, 0, 5.9]} rotation-y={-0.28}>
+          <mesh position={[0, 0.24, 0]} castShadow>
+            <boxGeometry args={[0.86, 0.18, 1.7]} />
+            <meshStandardMaterial color="#0284c7" roughness={0.8} />
+          </mesh>
+          <mesh position={[0, 0.42, -0.6]} rotation-x={0.42}>
+            <boxGeometry args={[0.8, 0.13, 0.55]} />
+            <meshStandardMaterial color="#f8fafc" roughness={0.9} />
+          </mesh>
+        </group>
+      ))}
+      {/* parasol */}
+      <group position={[9.0, 0, 6.1]}>
+        <mesh position={[0, 1.4, 0]}>
+          <cylinderGeometry args={[0.04, 0.04, 2.8, 8]} />
+          <meshStandardMaterial color="#e2e8f0" metalness={0.4} />
+        </mesh>
+        <mesh position={[0, 2.7, 0]} castShadow>
+          <coneGeometry args={[1.5, 0.5, 12]} />
+          <meshStandardMaterial color="#f59e0b" roughness={0.8} />
+        </mesh>
+      </group>
+
+      {/* ---------------- garden: planters + benches + ping pong ---------------- */}
+      {[
+        [-8.6, -6.2],
+        [-3.8, -6.2],
+        [1.2, -6.2],
+        [6.0, -6.2],
+        [9.4, -3.0],
+        [-9.4, -3.0],
+      ].map(([x, z], i) => (
+        <group key={`p${i}`} position={[x, 0, z]}>
+          <mesh position={[0, 0.28, 0]} castShadow>
+            <cylinderGeometry args={[0.42, 0.34, 0.56, 12]} />
+            <meshStandardMaterial color="#7c4a2d" roughness={0.9} />
+          </mesh>
+          <mesh position={[0, 0.95, 0]} castShadow>
+            <sphereGeometry args={[0.55, 14, 12]} />
+            <meshStandardMaterial color="#3f8f4e" roughness={0.9} />
+          </mesh>
+          <mesh position={[0.18, 1.25, -0.1]} castShadow>
+            <sphereGeometry args={[0.36, 12, 10]} />
+            <meshStandardMaterial color="#4caf5d" roughness={0.9} />
+          </mesh>
+        </group>
+      ))}
+      {/* benches around the garden */}
+      {[[-2.4, -3.4], [2.4, -3.4]].map(([x, z], i) => (
+        <group key={`b${i}`} position={[x, 0, z]}>
+          <mesh position={[0, 0.46, 0]} castShadow>
+            <boxGeometry args={[2.0, 0.08, 0.42]} />
+            <meshStandardMaterial color="#9a6b3f" roughness={0.8} />
+          </mesh>
+          {[-0.75, 0.75].map((dx) => (
+            <mesh key={dx} position={[dx, 0.22, 0]}>
+              <boxGeometry args={[0.1, 0.44, 0.36]} />
+              <meshStandardMaterial color="#334155" metalness={0.5} roughness={0.4} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+      {/* breakout ping-pong table */}
+      <group position={[-4.6, 0, -4.6]}>
+        <mesh position={[0, 0.72, 0]} castShadow>
+          <boxGeometry args={[2.6, 0.06, 1.5]} />
+          <meshStandardMaterial color="#15803d" roughness={0.6} />
+        </mesh>
+        <mesh position={[0, 0.82, 0]}>
+          <boxGeometry args={[0.04, 0.14, 1.55]} />
+          <meshStandardMaterial color="#f8fafc" transparent opacity={0.85} />
+        </mesh>
+        {[-1.05, 1.05].map((dx) => (
+          <mesh key={dx} position={[dx, 0.36, 0]}>
+            <boxGeometry args={[0.1, 0.72, 0.1]} />
+            <meshStandardMaterial color="#334155" metalness={0.5} />
+          </mesh>
+        ))}
+      </group>
+      {/* foosball table */}
+      <group position={[5.2, 0, -4.8]}>
+        <mesh position={[0, 0.7, 0]} castShadow>
+          <boxGeometry args={[1.9, 0.5, 1.0]} />
+          <meshStandardMaterial color="#0f766e" roughness={0.7} />
+        </mesh>
+        {[-0.7, -0.35, 0, 0.35, 0.7].map((dx, i) => (
+          <mesh key={i} position={[dx, 0.82, 0]}>
+            <cylinderGeometry args={[0.02, 0.02, 1.2, 6]} />
+            <meshStandardMaterial color="#cbd5e1" metalness={0.7} />
+          </mesh>
+        ))}
+      </group>
+
+      <PortalHtml position={[0, 1.4, -7.4]} center distanceFactor={12} zIndexRange={[55, 0]}>
+        <div className="pointer-events-none flex items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-400/40 bg-slate-950/85 px-2 py-1 text-[8px] font-black uppercase tracking-[0.16em] text-emerald-200 shadow-xl backdrop-blur">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+          Lantai 3 · Sky Lounge, Cafe & Terrace
+        </div>
+      </PortalHtml>
+    </group>
+  );
+}
+
 /* ---------------------------------- rooms --------------------------------- */
 
 function RoomFloors() {
-  const agents = useOffice((s) => s.agents);
-  const speakers = agents.filter((agent) => agent.speech);
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  const showFloor1Labels = focusedFloor === "all" || focusedFloor === 1;
   return (
     <group>
       {ROOM_LIST.map((room) => (
@@ -2469,26 +3533,26 @@ function RoomFloors() {
             <planeGeometry args={[room.w, room.h]} />
             <meshStandardMaterial color={room.floor} roughness={0.94} />
           </mesh>
-          {!speakers.some((agent) => Math.hypot(agent.x - room.door.x, agent.y - room.door.y) < 3.2) && (
+          {showFloor1Labels && (
             <PortalHtml
               position={[room.door.x, 2.12, room.door.y]}
               center
               distanceFactor={12}
               zIndexRange={[55, 0]}
             >
-              <div
-                className="pointer-events-none flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-[1px] text-[7px] font-black uppercase tracking-[0.12em] shadow-lg"
-                style={{
-                  color: room.accent,
-                  borderColor: `${room.accent}55`,
-                  background: "rgba(3,7,18,0.82)",
-                  backdropFilter: "blur(4px)",
-                }}
-              >
-                <span className="h-1 w-1 rounded-full" style={{ background: room.accent }} />
-                {room.label}
-              </div>
-            </PortalHtml>
+            <div
+              className="pointer-events-none flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-[1px] text-[7px] font-black uppercase tracking-[0.12em] shadow-lg"
+              style={{
+                color: room.accent,
+                borderColor: `${room.accent}55`,
+                background: "rgba(3,7,18,0.82)",
+                backdropFilter: "blur(4px)",
+              }}
+            >
+              <span className="h-1 w-1 rounded-full" style={{ background: room.accent }} />
+              {room.label}
+            </div>
+          </PortalHtml>
           )}
         </group>
       ))}
@@ -2586,11 +3650,54 @@ function WallsAndDoors() {
   );
 }
 
+
+function FloatingAgents({
+  agents,
+  focusedFloor,
+  selectedAgentId,
+  onSelect,
+  onArrive,
+  exterior,
+}: {
+  agents: import("@/lib/types").AgentRuntime[];
+  focusedFloor: 1 | 2 | 3 | "all";
+  selectedAgentId: string;
+  onSelect: (id: string) => void;
+  onArrive: (id: string, moveId: number) => void;
+  exterior: boolean;
+}) {
+  return (
+    <>
+      {agents
+        .filter((a) => (a.floor ?? 1) >= 2)
+        .sort((a, b) => a.y - b.y)
+        .map((agent) => {
+          const floorMatch = focusedFloor === "all" || focusedFloor === agent.floor;
+          const isOutside = !roomAt({ x: agent.x, y: agent.y });
+          return (
+            <Character3D
+              key={`${agent.id}-f${agent.floor ?? 1}`}
+              agent={agent}
+              selected={selectedAgentId === agent.id}
+              showLabel
+              hidden={agent.activity === "DRIVING" || (exterior && !isOutside) || !floorMatch}
+              onSelect={onSelect}
+              onArrive={onArrive}
+            />
+          );
+        })}
+    </>
+  );
+}
+
 /* ---------------------------------- scene --------------------------------- */
 
 function FitCamera({ controlsRef }: { controlsRef: MutableRefObject<any> }) {
   const { camera, size } = useThree();
   useEffect(() => {
+    // don't yank the camera on every resize — only frame it before any focus choice;
+    // the focused-floor glide owns the camera afterwards
+    if (useOffice.getState().focusedFloor !== 1) return;
     const aspect = size.width / Math.max(size.height, 1);
     const fov = THREE.MathUtils.degToRad(34);
     const widthDistance = 23.5 / (2 * Math.tan(fov / 2) * Math.max(aspect, 0.8));
@@ -2609,57 +3716,115 @@ function Scene() {
   const agents = useOffice((s) => s.agents);
   const controlsRef = useRef<any>(null);
   const selectedAgentId = useOffice((s) => s.selectedAgentId);
+  const focusedFloor = useOffice((s) => s.focusedFloor);
   const selectAgent = useOffice((s) => s.selectAgent);
   const markArrived = useOffice((s) => s.markArrived);
   const floorTexture = useWoodTexture();
-  const anySpeaking = agents.some((agent) => agent.speech);
-  const anyWalking = agents.some((agent) => agent.moving);
   const now = useLocalTime();
   const hour = now.getHours();
-  const night = hour < 6 || hour >= 18;
+  const timeOfDay = useOffice((s) => s.timeOfDay);
+  // auto follows the real clock: dawn 05–08, day 08–16, dusk 16–19, night otherwise
+  const mode =
+    timeOfDay !== "auto"
+      ? timeOfDay
+      : hour >= 5 && hour < 8
+        ? "morning"
+        : hour >= 8 && hour < 16
+          ? "day"
+          : hour >= 16 && hour < 19
+            ? "sunset"
+            : "night";
+  const night = mode === "night";
+  const sunset = mode === "sunset";
+  const morning = mode === "morning";
   const [exterior, setExterior] = useState(false);
   const exteriorRef = useRef(false);
 
+  // focus change drives exactly one smooth camera glide
+  const lastFocus = useRef<1 | 2 | 3 | "all" | null>(null);
+  // set while a glide runs; the exterior auto-switch must not fight it
+  const glide = useRef(false);
+
+  useEffect(() => {
+    if (lastFocus.current === focusedFloor) return;
+    lastFocus.current = focusedFloor;
+    const targetY = focusedFloor === 3 ? 6.9 : focusedFloor === 2 ? 3.7 : 0.5;
+    HOME_TARGET.set(0, targetY, 1.6);
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    if (focusedFloor === "all") {
+      controls.target.copy(HOME_TARGET);
+      controls.update();
+      return;
+    }
+
+    // glide to a fixed per-floor vantage; cancels any older glide still running
+    const cam = controls.object as THREE.Camera;
+    const dist = focusedFloor === 3 ? 34 : focusedFloor === 2 ? 30 : 28;
+    const fromPos = cam.position.clone();
+    const fromTarget = controls.target.clone();
+    const to = new THREE.Vector3(0, targetY + dist * 0.62, 1.6 + dist * 0.78);
+    glide.current = true;
+    exteriorRef.current = false;
+    setExterior(false);
+    const t0 = performance.now();
+    let raf = 0;
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / 700);
+      const e = 1 - Math.pow(1 - k, 3);
+      cam.position.lerpVectors(fromPos, to, e);
+      controls.target.lerpVectors(fromTarget, HOME_TARGET, e);
+      controls.update();
+      if (k < 1) raf = requestAnimationFrame(step);
+      else glide.current = false;
+    };
+    raf = requestAnimationFrame(step);
+    return () => {
+      cancelAnimationFrame(raf);
+      glide.current = false;
+    };
+  }, [focusedFloor]);
+
   useFrame(({ camera }) => {
+    if (glide.current) return;
     const distance = camera.position.distanceTo(HOME_TARGET);
-    if (!exteriorRef.current && distance > 36.8) {
+    // sticky switch with hysteresis; the glide is frozen while we swap scenes so
+    // three.js never sees a half-applied camera on the same frame
+    if (!exteriorRef.current && distance > 40) {
       exteriorRef.current = true;
       setExterior(true);
-      camera.position.set(0, 12, 36);
-      if (controlsRef.current) {
-        controlsRef.current.target.set(0, 4.4, 0);
-        controlsRef.current.update();
-      }
-    } else if (exteriorRef.current && distance < 35.2) {
+      camera.position.set(0, 13, 38);
+      controlsRef.current?.target.set(0, 4.4, 0);
+      controlsRef.current?.update();
+    } else if (exteriorRef.current && distance < 33) {
       exteriorRef.current = false;
       setExterior(false);
       camera.position.set(0, 16.5, 16.5);
-      if (controlsRef.current) {
-        controlsRef.current.target.copy(HOME_TARGET);
-        controlsRef.current.update();
-      }
+      controlsRef.current?.target.copy(HOME_TARGET);
+      controlsRef.current?.update();
     }
   });
 
   return (
     <>
-      <SkyDome night={night} />
+      <SkyDome night={night} sunset={sunset} />
       <Clouds night={night} />
-      <Celestial night={night} />
+      <Celestial night={night} sunset={sunset} />
       {night && <StarField />}
-      <color attach="background" args={[night ? "#0a1d31" : "#b7d8eb"]} />
-      <fog attach="fog" args={[night ? "#123149" : "#c7e0ec", 60, 260]} />
+      <color attach="background" args={[night ? "#0a1d31" : sunset ? "#e08a5a" : morning ? "#a9cbe6" : "#b7d8eb"]} />
+      <fog attach="fog" args={[night ? "#123149" : sunset ? "#c98a63" : morning ? "#b9d3e4" : "#c7e0ec", 60, 260]} />
 
-      <ambientLight intensity={night ? 0.64 : 0.82} color={night ? "#9cb8d8" : "#ffffff"} />
+      <ambientLight intensity={night ? 0.64 : sunset ? 0.72 : 0.82} color={night ? "#9cb8d8" : sunset ? "#f4b183" : morning ? "#cfe2f7" : "#ffffff"} />
       <hemisphereLight
-        args={[night ? "#4f7295" : "#dbeafe", night ? "#162316" : "#3d5a35", night ? 0.7 : 1.0]}
+        args={[night ? "#4f7295" : sunset ? "#e08a5a" : "#cfe6f5", night ? "#162316" : sunset ? "#3a2d18" : "#3d5a35", night ? 0.7 : 1.0]}
       />
       <directionalLight
-        position={night ? [-16, 24, -12] : [14, 26, 16]}
-        intensity={night ? 0.58 : 2.05}
-        color={night ? "#9bb8ff" : "#fff4dd"}
+        position={night ? [-16, 24, -12] : sunset ? [-52, 9, -30] : morning ? [42, 18, 26] : [14, 26, 16]}
+        intensity={night ? 0.58 : sunset ? 1.5 : morning ? 1.7 : 2.05}
+        color={night ? "#9bb8ff" : sunset ? "#ff9d5c" : morning ? "#ffd9a8" : "#fff4dd"}
         castShadow
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={[1024, 1024]}
         shadow-camera-left={-22}
         shadow-camera-right={22}
         shadow-camera-top={24}
@@ -2698,78 +3863,116 @@ function Scene() {
 
       {!exterior && (
         <>
-      {/* office base platform */}
-      <mesh position={[-0.4, -0.19, 0]} receiveShadow>
-        <boxGeometry args={[20.8, 0.32, 15.4]} />
-        <meshStandardMaterial color="#101c2c" roughness={0.9} />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} position={[-0.4, 0, 0]} receiveShadow>
-        <planeGeometry args={[19.8, 14.6]} />
-        <meshStandardMaterial map={floorTexture} color="#e1cfae" roughness={0.92} />
-      </mesh>
+          {/* Floor 1 (L1 · Kantor) */}
+          <group>
+            <mesh position={[-0.4, -0.19, 0]} receiveShadow>
+              <boxGeometry args={[20.8, 0.32, 15.4]} />
+              <meshStandardMaterial
+                color="#101c2c"
+                roughness={0.9}
+                transparent={focusedFloor !== "all" && focusedFloor !== 1}
+                opacity={focusedFloor === "all" || focusedFloor === 1 ? 1 : 0.18}
+                depthWrite={focusedFloor === "all" || focusedFloor === 1}
+              />
+            </mesh>
+            <mesh rotation-x={-Math.PI / 2} position={[-0.4, 0, 0]} receiveShadow>
+              <planeGeometry args={[19.8, 14.6]} />
+              <meshStandardMaterial
+                map={floorTexture}
+                color="#e1cfae"
+                roughness={0.92}
+                transparent={focusedFloor !== "all" && focusedFloor !== 1}
+                opacity={focusedFloor === "all" || focusedFloor === 1 ? 1 : 0.18}
+                depthWrite={focusedFloor === "all" || focusedFloor === 1}
+              />
+            </mesh>
 
-      <RoomFloors />
-      <WallsAndDoors />
-      <ParkingExit />
+            <RoomFloors />
+            <WallsAndDoors />
+            <ParkingExit />
 
-      {/* workstation furniture */}
-      {DESKS.map((desk) => {
-        const agent = agents.find((a) => a.deskIndex === desk.id);
-        return <Desk key={desk.id} cx={desk.cx} top={desk.top} agent={agent} />;
-      })}
-      <Whiteboard />
-      <Bookshelf />
-      <DigitalClock />
-      <Plant3D x={-9.7} z={-6.7} scale={0.7} />
-      <Plant3D x={-0.65} z={-6.7} scale={0.55} />
-      <Plant3D x={-9.7} z={-2.0} scale={0.55} />
+            {/* workstation furniture */}
+            {DESKS.map((desk) => {
+              const agent = agents.find((a) => a.deskIndex === desk.id);
+              return <Desk key={desk.id} cx={desk.cx} top={desk.top} agent={agent} />;
+            })}
+            <Whiteboard />
+            <Bookshelf />
+            <DigitalClock />
+            <Plant3D x={-9.7} z={-6.7} scale={0.7} />
+            <Plant3D x={-0.65} z={-6.7} scale={0.55} />
+            <Plant3D x={-9.7} z={-2.0} scale={0.55} />
 
-      {/* meeting room */}
-      <MeetingSet />
-      <Plant3D x={0.45} z={-6.7} scale={0.6} />
-      <Plant3D x={8.95} z={-6.7} scale={0.65} />
+            {/* meeting room */}
+            <MeetingSet />
+            <Plant3D x={0.45} z={-6.7} scale={0.6} />
+            <Plant3D x={8.95} z={-6.7} scale={0.65} />
 
-      {/* musholla */}
-      <PrayerRoom />
-      <Plant3D x={-9.75} z={6.75} scale={0.5} />
+            {/* musholla */}
+            <PrayerRoom />
+            <Plant3D x={-9.75} z={6.75} scale={0.5} />
 
-      {/* pantry */}
-      <PantryRoom />
-      <Plant3D x={-5.8} z={2.2} scale={0.5} />
+            {/* pantry */}
+            <PantryRoom />
+            <Plant3D x={-5.8} z={2.2} scale={0.5} />
 
-      {/* lounge */}
-      <LoungeRoom />
-      <Plant3D x={-1.9} z={6.75} scale={0.45} />
+            {/* lounge */}
+            <LoungeRoom />
+            <FrontLobby night={night} />
+            <Plant3D x={-1.9} z={6.75} scale={0.45} />
 
-      {/* toilet + sick bay */}
-      <ToiletRoom />
-      <SickBayRoom />
-      <Plant3D x={2.55} z={6.7} scale={0.5} />
+            {/* toilet + sick bay */}
+            <ToiletRoom />
+            <SickBayRoom />
+            <Plant3D x={2.55} z={6.7} scale={0.5} />
 
-      {/* corridor decor */}
-      <CorridorSofa />
-      <Plant3D x={-9.8} z={1.15} scale={0.7} />
-      <Plant3D x={9.0} z={1.15} scale={0.7} />
-      <Cat3D />
+            {/* corridor decor */}
+            <CorridorSofa />
+            <Plant3D x={-9.8} z={1.15} scale={0.7} />
+            <Plant3D x={9.0} z={1.15} scale={0.7} />
+            <Cat3D />
+          </group>
+
+          {/* Elevator shaft & moving glass cab connecting all 3 floors */}
+          <Elevator focusedFloor={focusedFloor} agents={agents} />
+
+          {/* Floor 2 baked into Floor3 as the ghost shell, so it never double-renders */}
+          <Floor2
+            visible={focusedFloor === "all" || focusedFloor === 2}
+            ghost={false}
+          />
+          {focusedFloor === "all" || focusedFloor === 2 ? <Floor2Plan /> : null}
+
+          {/* Floor 3: only shown when focused or when viewing all floors */}
+          <Floor3 visible={focusedFloor === "all" || focusedFloor === 3} />
         </>
       )}
 
       {exterior && <ExteriorShell night={night} />}
 
-      {/* characters stay mounted so their walks keep progressing while the shell is shown */}
+      {/* Floor 1 characters */}
       {[...agents]
         .sort((a, b) => a.y - b.y)
-        .map((agent) => (
-          <Character3D
-            key={agent.id}
-            agent={agent}
-            selected={selectedAgentId === agent.id}
-            showLabel={!anySpeaking && !anyWalking}
-            hidden={exterior}
-            onSelect={selectAgent}
-            onArrive={markArrived}
-          />
-        ))}
+        .map((agent) => {
+          const isOutside = !roomAt({ x: agent.x, y: agent.y });
+          const floorMatch =
+            focusedFloor === "all" ||
+            focusedFloor === (agent.floor ?? 1) ||
+            !!agent.cabin ||
+            agent.activity === "ELEVATOR" ||
+            (agent.moving && agent.pending?.activity === "ELEVATOR");
+          return (
+            <Character3D
+              key={agent.id}
+              agent={agent}
+              selected={selectedAgentId === agent.id}
+              showLabel
+              hidden={agent.activity === "DRIVING" || (exterior && !isOutside) || !floorMatch}
+              onSelect={selectAgent}
+              onArrive={markArrived}
+            />
+          );
+        })}
 
       <FitCamera controlsRef={controlsRef} />
       <OrbitControls
@@ -2780,7 +3983,9 @@ function Scene() {
         minDistance={18}
         maxDistance={40}
         minPolarAngle={0.6}
-        maxPolarAngle={1.22}
+        /* (1.05 < pi/2) keeps the camera above L3's ceiling-height furniture, so the
+           L2 partitions below can never be seen through the terrace decking. */
+        maxPolarAngle={1.05}
         minAzimuthAngle={-0.55}
         maxAzimuthAngle={0.55}
         enableDamping
@@ -2794,10 +3999,30 @@ function Scene() {
 
 export function Office3D() {
   const agents = useOffice((s) => s.agents);
+  const focusedFloor = useOffice((s) => s.focusedFloor);
+  const setFocusedFloor = useOffice((s) => s.setFocusedFloor);
+  const timeOfDay = useOffice((s) => s.timeOfDay);
+  const setTimeOfDay = useOffice((s) => s.setTimeOfDay);
   const screenAgent = useOffice((s) => s.agents.find((a) => a.id === s.screenAgentId) ?? null);
   const focusScreen = useOffice((s) => s.focusScreen);
   const portalRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
+  // Pause the whole render loop while the canvas is scrolled out of view or the
+  // tab is in the background. Saves GPU/battery on the heaviest component.
+  const [inView, setInView] = useState(true);
+  const [pageHidden, setPageHidden] = useState(false);
+
+  useEffect(() => {
+    document.addEventListener("visibilitychange", () => setPageHidden(document.hidden));
+  }, []);
+
+  useEffect(() => {
+    const node = sceneRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(([entry]) => setInView(entry.isIntersecting), { threshold: 0 });
+    io.observe(node);
+    return () => io.disconnect();
+  }, []);
 
   useEffect(() => {
     const node = sceneRef.current;
@@ -2824,8 +4049,9 @@ export function Office3D() {
         >
           <Canvas
             shadows
-            dpr={[1, 1.8]}
-            camera={{ position: [0, 16.5, 16.5], fov: 34, near: 0.1, far: 420 }}
+            dpr={[1, 1.5]}
+            frameloop={inView && !pageHidden ? "always" : "never"}
+            camera={{ position: [0, 16.5, 16.5], fov: 34, near: 0.1, far: 260 }}
             gl={{ antialias: true, powerPreference: "high-performance" }}
           >
             <Scene />
@@ -2898,8 +4124,59 @@ export function Office3D() {
           </span>
           <span className="h-3 w-px bg-white/15" />
           <span className="flex items-center gap-1 text-slate-400">
-            <Move3d size={11} /> 6 ruangan + pintu
+            <Move3d size={11} /> 3 lantai + lift + 6 ruangan
           </span>
+        </div>
+
+        {/* Floor picker view buttons */}
+        <div className="absolute left-3 top-3 z-20 flex items-center gap-1 rounded-xl border border-white/15 bg-slate-950/85 p-1 text-[11px] font-bold text-slate-200 shadow-2xl backdrop-blur">
+          <span className="px-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-400">
+            Lantai:
+          </span>
+          {[
+            { id: 1 as const, label: "L1 · Kantor" },
+            { id: 2 as const, label: "L2 · R&D Hub" },
+            { id: 3 as const, label: "L3 · Sky Lounge" },
+            { id: "all" as const, label: "Semua" },
+          ].map((fl) => (
+            <button
+              key={fl.id}
+              type="button"
+              onClick={() => setFocusedFloor(fl.id)}
+              className={`rounded-lg px-2.5 py-1 text-[10px] font-bold transition ${
+                focusedFloor === fl.id
+                  ? "bg-cyan-400 text-slate-950 shadow-md"
+                  : "text-slate-300 hover:bg-white/10"
+              }`}
+            >
+              {fl.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Time-of-day toggle: Auto follows the real clock, plus manual presets */}
+        <div className="absolute left-3 top-16 z-20 flex flex-col items-center gap-1 rounded-xl border border-white/15 bg-slate-950/85 p-1 text-[11px] font-bold text-slate-200 shadow-2xl backdrop-blur">
+          {([
+            { id: "auto" as const, label: "A", title: "Otomatis (ikut jam)" },
+            { id: "morning" as const, label: "🌅", title: "Pagi" },
+            { id: "day" as const, label: "☀️", title: "Siang" },
+            { id: "sunset" as const, label: "🌇", title: "Senja" },
+            { id: "night" as const, label: "🌙", title: "Malam" },
+          ]).map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              title={m.title}
+              onClick={() => setTimeOfDay(m.id)}
+              className={`grid h-6 w-6 place-items-center rounded-lg text-[10px] font-bold leading-none transition ${
+                timeOfDay === m.id
+                  ? "bg-amber-400 text-slate-950 shadow-md"
+                  : "text-slate-300 hover:bg-white/10"
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
 
         <div className="pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/75 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-widest text-slate-400 backdrop-blur">

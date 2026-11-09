@@ -12,6 +12,10 @@ export type Activity =
   | "TOILET"
   | "CHATTING"
   | "RESTING"
+  | "DRIVING"
+  | "ELEVATOR"
+  | "PINGPONG"
+  | "RELAXING"
   | "ERROR";
 
 export type Pose =
@@ -46,6 +50,7 @@ export interface AgentRuntime extends AgentConfig {
   pose: Pose;
   x: number;
   y: number;
+  floor?: number;
   targetX: number;
   targetY: number;
   moveId: number;
@@ -61,6 +66,9 @@ export interface AgentRuntime extends AgentConfig {
   chatStarted?: boolean;
   lastReply?: string | null;
   pending: { activity: Activity; pose: Pose; note: string | null } | null;
+  pendingFloor?: 1 | 2 | 3 | null;
+  /** set while the agent is inside the lift cab; drives the vertical animation */
+  cabin?: { from: 1 | 2 | 3; to: 1 | 2 | 3 } | null;
 }
 
 export interface TranscriptMessage {
@@ -81,6 +89,7 @@ export interface MeetingState {
   topic: string;
   rounds: number;
   participantIds: string[];
+  leaderId?: string;
   phase: MeetingPhase;
   currentRound: number;
   speakingId: string | null;
@@ -110,6 +119,9 @@ export interface QuickAction {
     | "ERROR"
     | "CHAT"
     | "RECOVER"
-    | "DESK";
+    | "DESK"
+    | "ELEVATOR"
+    | "PINGPONG"
+    | "RELAX";
   label: string;
 }

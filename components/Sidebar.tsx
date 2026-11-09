@@ -4,9 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
+  Briefcase,
+  Crown,
   AlertTriangle,
   ArrowRight,
+  ArrowUp,
   BedDouble,
+  Car,
   Coffee,
   Droplets,
   Flame,
@@ -26,6 +30,7 @@ import {
   Sun,
   Tv,
   Users,
+  Utensils,
   Zap,
 } from "lucide-react";
 import { useOffice } from "@/lib/store";
@@ -43,18 +48,32 @@ const ACTIVITY_META: Record<string, { label: string; dot: string; text: string }
   TOILET: { label: "Ke Toilet", dot: "bg-stone-400", text: "text-stone-300" },
   CHATTING: { label: "Ngobrol", dot: "bg-fuchsia-400", text: "text-fuchsia-300" },
   RESTING: { label: "Istirahat", dot: "bg-indigo-400", text: "text-indigo-300" },
+  DRIVING: { label: "Nyetir Mobil", dot: "bg-teal-400", text: "text-teal-300" },
+  ELEVATOR: { label: "Naik Lift", dot: "bg-sky-400", text: "text-sky-300" },
+  PINGPONG: { label: "Main Pingpong", dot: "bg-green-400", text: "text-green-300" },
+  RELAXING: { label: "Santai", dot: "bg-amber-300", text: "text-amber-200" },
   ERROR: { label: "API Error", dot: "bg-rose-500", text: "text-rose-300" },
 };
+
+const ACTIVITY_MODES: { id: "random" | "ai"; label: string }[] = [
+  { id: "random", label: "Acak" },
+  { id: "ai", label: "✨ AI Pilih Sendiri" },
+];
 
 const QUICK_ACTIONS = [
   { type: "WORK", label: "Kerja di Meja", icon: Monitor, tone: "sky" },
   { type: "MEETING", label: "Panggil Meeting", icon: Users, tone: "cyan" },
   { type: "TV", label: "Nonton TV", icon: Tv, tone: "violet" },
+  { type: "ELEVATOR", label: "Naik Lift", icon: ArrowUp, tone: "cyan" },
   { type: "DRINK", label: "Minum", icon: Coffee, tone: "amber" },
+  { type: "PANTRY", label: "Duduk Pantry", icon: Utensils, tone: "amber" },
+  { type: "DRIVE", label: "Parkir Mobil", icon: Car, tone: "teal" },
   { type: "PRAY", label: "Sholat", icon: Moon, tone: "emerald" },
   { type: "COOK", label: "Masak Mie", icon: Flame, tone: "amber" },
   { type: "TOILET", label: "Ke Toilet", icon: Droplets, tone: "stone" },
   { type: "SOFA", label: "Duduk Sofa", icon: Sofa, tone: "indigo" },
+  { type: "PINGPONG", label: "Pingpong (Lantai 3)", icon: Activity, tone: "emerald" },
+  { type: "RELAX", label: "Santai Kopi (Lantai 3)", icon: Coffee, tone: "amber" },
   { type: "SLEEP", label: "Tidur", icon: BedDouble, tone: "indigo" },
   { type: "ERROR", label: "API Error", icon: AlertTriangle, tone: "rose" },
   { type: "CHAT", label: "Ajak Ngobrol", icon: MessageCircle, tone: "fuchsia" },
@@ -130,10 +149,12 @@ export function Sidebar() {
   const meeting = useOffice((s) => s.meeting);
   const tab = useOffice((s) => s.sidebarTab);
   const setTab = useOffice((s) => s.setSidebarTab);
+  const officeProject = useOffice((s) => s.officeProject);
+  const setOfficeProject = useOffice((s) => s.setOfficeProject);
   const topic = useOffice((s) => s.meetingTopic);
   const setTopic = useOffice((s) => s.setMeetingTopic);
-  const rounds = useOffice((s) => s.meetingRounds);
-  const setRounds = useOffice((s) => s.setMeetingRounds);
+  const leaderId = useOffice((s) => s.meetingLeaderId);
+  const setLeaderId = useOffice((s) => s.setMeetingLeaderId);
   const picks = useOffice((s) => s.meetingPick);
   const togglePick = useOffice((s) => s.toggleMeetingPick);
   const setPick = useOffice((s) => s.setMeetingPick);
@@ -148,6 +169,9 @@ export function Sidebar() {
   const events = useOffice((s) => s.events);
   const openModal = useOffice((s) => s.openModal);
   const notify = useOffice((s) => s.notify);
+  const activityMode = useOffice((s) => s.activityMode);
+  const setActivityMode = useOffice((s) => s.setActivityMode);
+  const autoAct = useOffice((s) => s.autoAct);
 
   const [taskText, setTaskText] = useState("Rancang endpoint analytics dan lakukan code review.");
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -232,6 +256,21 @@ export function Sidebar() {
               <div className="space-y-4">
                 <div>
                   <label className="mb-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                    <span className="flex items-center gap-1.5 text-cyan-300">
+                      <Briefcase size={12} /> Project Kantor Saat Ini
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    value={officeProject}
+                    onChange={(e) => setOfficeProject(e.target.value)}
+                    className="w-full rounded-xl border border-cyan-400/20 bg-slate-950/60 px-3 py-2 text-[11px] font-medium text-cyan-100 placeholder:text-slate-500 focus:border-cyan-300/50 focus:outline-none"
+                    placeholder="Nama project kantor..."
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
                     Topik diskusi
                     <span className="text-[9px] font-medium normal-case tracking-normal text-slate-500">
                       {topic.length}/400
@@ -247,30 +286,28 @@ export function Sidebar() {
                 </div>
 
                 <div>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
-                      Putaran diskusi
+                  <label className="mb-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                    <span className="flex items-center gap-1.5 text-amber-300">
+                      <Crown size={12} /> Pemimpin Rapat
                     </span>
-                    <span className="rounded-md bg-cyan-400/10 px-2 py-0.5 text-[10px] font-bold text-cyan-200">
-                      {rounds} putaran
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={1}
-                    max={4}
-                    step={1}
-                    value={rounds}
-                    onChange={(event) => setRounds(Number(event.target.value))}
-                    className="w-full"
-                  />
-                  <div className="mt-1 flex justify-between text-[8px] font-semibold text-slate-500">
-                    <span>Singkat</span>
-                    <span>2</span>
-                    <span>3</span>
-                    <span>Mendalam</span>
-                  </div>
+                  </label>
+                  <select
+                    value={leaderId}
+                    onChange={(e) => setLeaderId(e.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 text-[11px] font-semibold text-slate-200 focus:border-amber-300/40 focus:outline-none"
+                  >
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.role})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[8.5px] text-slate-500">
+                    Pemimpin mengarahkan diskusi dan menutup rapat ketika solusi sudah tercapai.
+                  </p>
                 </div>
+
+
 
                 <div>
                   <div className="mb-2 flex items-center justify-between">
@@ -338,7 +375,7 @@ export function Sidebar() {
                         notify("Topik meeting masih kosong.", "error");
                         return;
                       }
-                      startMeeting(topic.trim(), picks, rounds);
+                      startMeeting(topic.trim(), picks, leaderId);
                     }}
                     className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-400 to-cyan-400 px-3 py-2.5 text-[11px] font-black text-slate-900 shadow-[0_10px_30px_-12px_rgba(94,234,212,0.9)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -373,7 +410,7 @@ export function Sidebar() {
                         {meeting.phase === "gathering"
                           ? "Menunggu peserta duduk"
                           : meeting.phase === "discussing"
-                            ? `Diskusi · putaran ${meeting.currentRound}/${meeting.rounds}`
+                            ? `Diskusi sedang berlangsung · interaksi ke-${meeting.currentRound}`
                             : "Rapat selesai"}
                       </span>
                       {meeting.simulated && (
@@ -598,13 +635,45 @@ export function Sidebar() {
                       <button
                         key={action.type}
                         type="button"
-                        onClick={() => selectedAgent && dispatchQuick(selectedAgent.id, action.type)}
+                        onClick={() => {
+                          if (!selectedAgent) return;
+                          dispatchQuick(selectedAgent.id, action.type);
+                        }}
                         className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[10px] font-semibold transition ${TONE_CLASSES[action.tone]}`}
                       >
                         <action.icon size={13} />
                         {action.label}
                       </button>
                     ))}
+                  </div>
+
+                  {/* Mode aktivitas: acak atau biar AI yang memilih */}
+                  <div className="mt-3 rounded-xl border border-violet-400/20 bg-violet-500/5 p-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="flex items-center gap-1.5 text-[10px] font-bold text-violet-200">
+                        <Sparkles size={12} /> Mode Aktivitas
+                      </span>
+                      <span className="text-[8px] text-slate-400">Acak / AI pilih sendiri</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {ACTIVITY_MODES.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            setActivityMode(opt.id);
+                            if (selectedAgent) autoAct(selectedAgent.id);
+                          }}
+                          className={`rounded-full border px-2 py-0.5 text-[8.5px] font-semibold transition ${
+                            activityMode === opt.id
+                              ? "border-violet-300 bg-violet-400/20 text-violet-100"
+                              : "border-white/10 bg-white/[0.02] text-slate-400 hover:text-white"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   {selectedAgent && (
                     <p className="mt-2 text-center text-[8.5px] text-slate-500">
@@ -621,21 +690,35 @@ export function Sidebar() {
                     </span>
                     <span className="text-[9px] text-slate-500">{events.length}</span>
                   </div>
-                  <div className="max-h-[240px] space-y-1.5 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/60 p-2.5">
-                    {events.map((event) => (
-                      <div key={event.id} className="flex items-start gap-2">
-                        <span
-                          className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
-                            event.kind === "error"
-                              ? "bg-rose-400"
-                              : event.kind === "success"
-                                ? "bg-emerald-400"
-                                : "bg-sky-400"
-                          }`}
-                        />
-                        <p className="text-[9.5px] leading-snug text-slate-400">{event.message}</p>
-                      </div>
-                    ))}
+                  <div className="max-h-[190px] space-y-1.5 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/60 p-2.5">
+                    {events.length === 0 && (
+                      <p className="text-center text-[9px] text-slate-500">Belum ada aktivitas.</p>
+                    )}
+                    {events.map((event) => {
+                      const time = new Date(event.at).toLocaleTimeString("id-ID", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      });
+                      return (
+                        <div key={event.id} className="flex items-start gap-1.5 text-[9.5px] leading-snug">
+                          <span
+                            className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full"
+                            style={{
+                              backgroundColor:
+                                event.color ??
+                                (event.kind === "error"
+                                  ? "#fb7185"
+                                  : event.kind === "success"
+                                    ? "#34d399"
+                                    : "#38bdf8"),
+                            }}
+                          />
+                          <span className="shrink-0 font-mono text-[8px] text-slate-500">{time}</span>
+                          <p className="flex-1 text-slate-300">{event.message}</p>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>

@@ -70,6 +70,34 @@ export function generateDemoReply(ctx: DemoContext): string {
   const tone = personaLine(agent);
   const seed = topic.slice(0, 96);
 
+  if (/KODE\|kalimat/i.test(ctx.instruction ?? "")) {
+    const code = pick([
+      "WORK", "TV", "DRINK", "COOK", "PRAY", "TOILET",
+      "SOFA", "SLEEP", "CHAT", "DRIVE", "PINGPONG", "RELAX",
+    ]);
+    const lines: Record<string, string[]> = {
+      WORK: [
+        `Lanjut nulis test untuk ${skill}.`,
+        `Beresin bug di modul ${skill2}.`,
+        `Review PR terbaru bagian ${skill}.`,
+        `Refactor endpoint ${skill} biar rapi.`,
+        `Dokumentasiin API ${skill2} dulu.`,
+      ],
+      TV: ["Otak butuh jeda, nonton TV dulu.", "Lounge dulu sebentar.", "Nonton berita tech bentar."],
+      DRINK: ["Kopi dulu biar fokus.", "Haus, ambil minum sebentar.", "Teh hangat satu ya."],
+      COOK: ["Mau masak cepat buat bekal.", "Perut bunyi, ke pantry dulu.", "Bikin indomie dulu ah."],
+      PRAY: ["Waktunya sholat dulu.", "Istirahat sebentar, sholat.", "Sholat dulu ya."],
+      TOILET: ["Permisi ke toilet sebentar.", "Badan minta jeda, ke toilet.", "BRB toilet."],
+      SOFA: ["Duduk santai dulu di sofa.", "Rebahan sebentar, pegal.", "Istirahat mata sebentar."],
+      SLEEP: ["Ngantuk berat, tidur sebentar.", "Power nap 15 menit.", "Mata udah berat, tidur dulu."],
+      CHAT: ["Mau ngobrol santai dulu.", "Eh, ngobrol yuk.", "Cari teman curhat bentar."],
+      DRIVE: ["Keliling sebentar naik mobil.", "Butuh udara segar.", "Parkir mobil dulu."],
+      PINGPONG: ["Main pingpong dulu yuk.", "Regangkan badan dulu.", "Siapa mau tanding pingpong?"],
+      RELAX: ["Santai di kafe Lantai 3.", "Kopi dan duduk santai.", "Ngopi dulu di atas."],
+    };
+    return `${code}|${pick(lines[code] ?? ["Jalan-jalan sebentar."])}`;
+  }
+
   if (kind === "task") {
     return pick([
       `Siap, saya mulai sekarang: ${ctx.instruction ?? "tugas baru"}. Saya akan pakai ${skill} dan ${skill2}, lalu kirim ringkasan hasil plus catatan risiko ke transkrip tim.`,

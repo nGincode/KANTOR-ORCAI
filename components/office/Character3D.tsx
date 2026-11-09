@@ -7,6 +7,7 @@ import * as THREE from "three";
 import type { AgentRuntime } from "@/lib/types";
 import { characterFacing, planPath, type Vec2 } from "@/lib/office";
 import { agentPositions } from "@/lib/agentPositions";
+import { liftState } from "@/lib/liftState";
 import { SpeechBubble } from "../SpeechBubble";
 import { PortalHtml } from "./HtmlPortal";
 
@@ -29,11 +30,15 @@ const STATUS_LABEL: Record<string, { text: string; color: string }> = {
   TOILET: { text: "🚻 Ke Toilet", color: "#cbd5e1" },
   COOKING: { text: "🍜 Masak mie", color: "#fbbf24" },
   RESTING: { text: "😴 Istirahat", color: "#a5b4fc" },
+  PINGPONG: { text: "🏓 Main Pingpong", color: "#4ade80" },
+  RELAXING: { text: "☕ Santai", color: "#fcd34d" },
   DRINKING: { text: "☕ Minum", color: "#fbbf24" },
   WORKING: { text: "💻 Fokus", color: "#38bdf8" },
   CHATTING: { text: "💬 Ngobrol", color: "#e879f9" },
   WATCHING_TV: { text: "📺 Santai", color: "#a78bfa" },
   MEETING: { text: "🗣️ Rapat", color: "#5eead4" },
+  DRIVING: { text: "🚗 Parkir", color: "#2dd4bf" },
+  ELEVATOR: { text: "🛗 Naik Lift", color: "#38bdf8" },
 };
 
 interface Character3DProps {
@@ -140,6 +145,12 @@ export function Character3D({ agent, selected, showLabel = true, hidden = false,
 
     root.position.x = posRef.current.x;
     root.position.z = posRef.current.y;
+    // Seat cushions sit ~0.3 above the floor; raise the hip so legs hang naturally.
+    const floorY = (current.floor ?? 1) === 3 ? 6.4 : (current.floor ?? 1) === 2 ? 3.2 : 0;
+    const hipLift = current.moving ? 0 : current.pose === "sitting" || current.pose === "working" ? 0.3 : 0;
+    // Inside the lift the body rides with the cab instead of snapping to the floor.
+    const targetY = current.cabin ? liftState.cabY : floorY + hipLift;
+    root.position.y = THREE.MathUtils.damp(root.position.y, targetY, current.cabin ? 40 : 7, delta);
 
     const targetRotation = moving
       ? Math.atan2(dirRef.current.x, dirRef.current.y)
@@ -161,7 +172,7 @@ export function Character3D({ agent, selected, showLabel = true, hidden = false,
     if (bodyRef.current) {
       bodyRef.current.position.y = THREE.MathUtils.damp(
         bodyRef.current.position.y,
-        (seated ? -0.2 : 0) + bob,
+        (seated ? -0.22 : 0) + bob,
         8,
         delta,
       );
@@ -244,23 +255,35 @@ export function Character3D({ agent, selected, showLabel = true, hidden = false,
       armR.current.rotation.z = THREE.MathUtils.damp(armR.current.rotation.z, armRZ, 10, delta);
     }
 
-    // lying on the sofa when API errors
+    // lying flat on bed when sleeping / API error
     if (poseRef.current) {
+      poseRef.current.rotation.x = THREE.MathUtils.damp(
+        poseRef.current.rotation.x,
+        sleeping ? -Math.PI / 2 : 0,
+        6,
+        delta,
+      );
       poseRef.current.rotation.z = THREE.MathUtils.damp(
         poseRef.current.rotation.z,
-        sleeping ? Math.PI / 2 : 0,
+        0,
         6,
         delta,
       );
       poseRef.current.position.y = THREE.MathUtils.damp(
         poseRef.current.position.y,
-        sleeping ? 0.56 : 0,
+        sleeping ? 0.62 : 0,
         6,
         delta,
       );
       poseRef.current.position.x = THREE.MathUtils.damp(
         poseRef.current.position.x,
-        sleeping ? 0.86 : 0,
+        0,
+        6,
+        delta,
+      );
+      poseRef.current.position.z = THREE.MathUtils.damp(
+        poseRef.current.position.z,
+        0,
         6,
         delta,
       );
